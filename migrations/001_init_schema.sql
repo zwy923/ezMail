@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS emails_raw (
 -- Classification metadata
 CREATE TABLE IF NOT EXISTS emails_metadata (
     id SERIAL PRIMARY KEY,
-    email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
+    email_id INT NOT NULL UNIQUE REFERENCES emails_raw(id) ON DELETE CASCADE,
     category VARCHAR(255) NOT NULL,
     confidence FLOAT NOT NULL DEFAULT 1.0,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
