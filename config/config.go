@@ -16,6 +16,12 @@ type DBConfig struct {
 	Name     string `yaml:"name"`
 }
 
+type RedisConfig struct {
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+}
+
 type MQConfig struct {
 	URL     string   `yaml:"url"`
 	Brokers []string `yaml:"brokers"` // Kafka 用的
@@ -35,6 +41,7 @@ type Config struct {
 	MQ     MQConfig     `yaml:"mq"`
 	JWT    JWTConfig    `yaml:"jwt"`
 	Server ServerConfig `yaml:"server"`
+	Redis  RedisConfig  `yaml:"redis"`
 }
 
 func Load() *Config {

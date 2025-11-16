@@ -16,3 +16,8 @@ mq:
 
 jwt:
   secret: "zwy923"
+
+redis:
+  addr: "localhost:6379"
+  password: "0923"
+  db: 0

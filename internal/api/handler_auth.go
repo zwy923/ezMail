@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"mygoproject/internal/service"
+	"mygoproject/internal/service/api"
 )
 
 type AuthHandler struct {

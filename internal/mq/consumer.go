@@ -20,7 +20,7 @@ type Consumer struct {
 
 // NewConsumer creates a consumer for a specific routing key.
 // Each routing key gets its own queue, e.g., "email.received" -> "email.received.q"
-func NewConsumer(url, routingKey string) (*Consumer, error) {
+func NewConsumer(url, queueName, routingKey string) (*Consumer, error) {
 	conn, err := amqp091.Dial(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
@@ -31,45 +31,46 @@ func NewConsumer(url, routingKey string) (*Consumer, error) {
 		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
-	// 声明 exchange（确保存在）
+	// 声明 exchange
 	err = ch.ExchangeDeclare(
 		ExchangeName,
 		"topic",
-		true,
-		false,
-		false,
-		false,
+		true,  // durable
+		false, // auto-delete
+		false, // internal
+		false, // no-wait
 		nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
-	// 为每个 routing key 创建独立的队列
-	queueName := routingKey + ".q"
+	// 每个 worker 使用自己的 queueName（不可自动生成）
 	q, err := ch.QueueDeclare(
 		queueName,
 		true,  // durable
-		false, // delete when unused
+		false, // auto-delete
 		false, // exclusive
 		false, // no-wait
-		nil,   // arguments
+		nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	// 绑定队列到 exchange
+	// 绑定队列到 exchange → 支持 fanout
 	err = ch.QueueBind(
-		q.Name,       // queue name
-		routingKey,   // routing key
-		ExchangeName, // exchange
+		q.Name,
+		routingKey,
+		ExchangeName,
 		false,
 		nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to bind queue: %w", err)
 	}
+
+	fmt.Printf("[RabbitMQ] Consumer started for routingKey=%s, queue=%s\n", routingKey, queueName)
 
 	return &Consumer{
 		conn:       conn,
