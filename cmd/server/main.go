@@ -3,13 +3,14 @@ package main
 import (
 	"log"
 
-	"go.uber.org/zap"
 	"mygoproject/config"
 	"mygoproject/internal/api"
 	"mygoproject/internal/db"
 	"mygoproject/internal/mq"
 	"mygoproject/internal/repository"
 	"mygoproject/internal/service"
+
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -32,13 +33,6 @@ func main() {
 	}
 	defer producer.Close()
 
-	// 4. Init RabbitMQ Consumer
-	consumer, err := mq.NewConsumer(cfg.MQ.URL)
-	if err != nil {
-		log.Fatalf("failed to init consumer: %v", err)
-	}
-	defer consumer.Close()
-
 	// 5. Init repositories
 	userRepo := repository.NewUserRepository(dbConn)
 	emailRepo := repository.NewEmailRepository(dbConn)
@@ -49,12 +43,15 @@ func main() {
 	mailService := service.NewMailService(emailRepo, producer)
 	classifyService := service.NewClassifyService(emailRepo, metadataRepo)
 
-	// 7. Inject classify handler into consumer
-	mqrouter := mq.NewRouter()
-	mqrouter.Register("email.received", classifyService.HandleEmailReceived)
-	consumer.SetHandler(mqrouter.Handle)
+	// 7. Init RabbitMQ Consumer for email.received events
+	consumer, err := mq.NewConsumer(cfg.MQ.URL, "email.received")
+	if err != nil {
+		log.Fatalf("failed to init consumer: %v", err)
+	}
+	defer consumer.Close()
+	consumer.SetHandler(classifyService.HandleEmailReceived)
 
-	// Start consumer goroutine
+	// Start consumer in goroutine (StartConsuming blocks)
 	go func() {
 		if err := consumer.StartConsuming(); err != nil {
 			logger.Fatal("consumer start failed", zap.Error(err))

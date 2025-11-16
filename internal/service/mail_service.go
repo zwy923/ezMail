@@ -37,7 +37,7 @@ func (s *MailService) CreateRawAndPublish(ctx context.Context, userID int, subje
 		return 0, err
 	}
 
-	// 1. 构造事件 payload
+	// 构造事件 payload
 	payload := mq.EmailReceivedPayload{
 		EmailID:    emailID,
 		UserID:     userID,
@@ -46,14 +46,8 @@ func (s *MailService) CreateRawAndPublish(ctx context.Context, userID int, subje
 		ReceivedAt: time.Now(),
 	}
 
-	// 2. 构造 Event{Type, Data}
-	evt, err := mq.NewEvent("email.received", payload)
-	if err != nil {
-		return 0, err
-	}
-
-	// 3. 发布事件
-	if err := s.producer.Publish(evt); err != nil {
+	// 发布事件，使用 routing key "email.received"
+	if err := s.producer.Publish("email.received", payload); err != nil {
 		return 0, err
 	}
 

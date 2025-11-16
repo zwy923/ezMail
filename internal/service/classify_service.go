@@ -23,29 +23,26 @@ func NewClassifyService(emailRepo *repository.EmailRepository, metadataRepo *rep
 // HandleEmailReceived processes an EmailReceivedEvent and stores classification.
 // This method is idempotent: calling it multiple times with the same event
 // will have the same effect as calling it once.
+// Optimized to use a single database query to check both email status and metadata existence.
 func (s *ClassifyService) HandleEmailReceived(ctx context.Context, raw json.RawMessage) error {
 	var p mq.EmailReceivedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return err
 	}
 
-	// 幂等性检查：如果邮件已经分类，直接返回
-	email, err := s.emailRepo.FindRawByID(ctx, p.EmailID)
+	// 一次性查询：获取 email 和 metadata 是否存在（单次 round trip）
+	email, metadataExists, err := s.emailRepo.FindRawWithMetadataByID(ctx, p.EmailID)
 	if err != nil {
 		return err
 	}
+
+	// 幂等性检查：如果已经分类，直接返回
 	if email.Status == "classified" {
-		// 已经分类过，幂等返回
 		return nil
 	}
 
-	// 检查metadata是否已存在（双重检查）
-	exists, err := s.metadataRepo.Exists(ctx, p.EmailID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		// metadata已存在，只需更新状态
+	// 如果 metadata 已存在，只需更新状态
+	if metadataExists {
 		if email.Status != "classified" {
 			if err := s.emailRepo.UpdateStatus(ctx, p.EmailID, "classified"); err != nil {
 				return err
@@ -66,7 +63,7 @@ func (s *ClassifyService) HandleEmailReceived(ctx context.Context, raw json.RawM
 		category = "other"
 	}
 
-	// 插入metadata（内部已做幂等检查）
+	// 插入metadata（使用 ON CONFLICT 保证幂等性）
 	if err := s.metadataRepo.Insert(ctx, p.EmailID, category, 1.0); err != nil {
 		return err
 	}

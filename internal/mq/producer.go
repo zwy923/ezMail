@@ -7,10 +7,13 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
+const (
+	ExchangeName = "events"
+)
+
 type Producer struct {
 	conn    *amqp091.Connection
 	channel *amqp091.Channel
-	queue   amqp091.Queue
 }
 
 func NewProducer(url string) (*Producer, error) {
@@ -24,23 +27,23 @@ func NewProducer(url string) (*Producer, error) {
 		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
-	// 通用队列名称改为 "events"
-	q, err := ch.QueueDeclare(
-		"events",
-		true,
-		false,
-		false,
-		false,
-		nil,
+	// 声明 topic exchange
+	err = ch.ExchangeDeclare(
+		ExchangeName,
+		"topic", // topic exchange 支持 routing key 模式匹配
+		true,    // durable
+		false,   // auto-deleted
+		false,   // internal
+		false,   // no-wait
+		nil,     // arguments
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to declare queue: %w", err)
+		return nil, fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
 	return &Producer{
 		conn:    conn,
 		channel: ch,
-		queue:   q,
 	}, nil
 }
 
@@ -53,18 +56,19 @@ func (p *Producer) Close() {
 	}
 }
 
-// Publish() —— 发布任意事件类型的 Event
-func (p *Producer) Publish(event Event) error {
-	body, err := json.Marshal(event)
+// Publish publishes an event to the exchange with the given routing key.
+// routingKey: e.g., "email.received", "user.registered"
+func (p *Producer) Publish(routingKey string, payload any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 
 	return p.channel.Publish(
-		"",
-		p.queue.Name,
-		false,
-		false,
+		ExchangeName, // exchange
+		routingKey,   // routing key
+		false,        // mandatory
+		false,        // immediate
 		amqp091.Publishing{
 			ContentType:  "application/json",
 			Body:         body,

@@ -6,6 +6,13 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- Email status enum
+DO $$ BEGIN
+    CREATE TYPE email_status AS ENUM ('received', 'classified');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
 -- Raw incoming emails
 CREATE TABLE IF NOT EXISTS emails_raw (
     id SERIAL PRIMARY KEY,
@@ -13,7 +20,7 @@ CREATE TABLE IF NOT EXISTS emails_raw (
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
     raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    status VARCHAR(50) NOT NULL DEFAULT 'received', -- 'received' or 'classified'
+    status email_status NOT NULL DEFAULT 'received',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
