@@ -1,0 +1,94 @@
+# 环境变量文件（包含敏感信息）
+.env
+.env.local
+.env.*.local
+
+# Go 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# Go 依赖目录
+vendor/
+
+# Go 测试覆盖率文件
+*.coverprofile
+coverage.html
+coverage.out
+
+# Go 模块缓存（可选，通常不需要提交）
+# go.sum 应该提交，但这里列出以防万一需要忽略某些特定情况
+
+# IDE 配置文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# JetBrains IDEs
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# 操作系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# 日志文件
+*.log
+logs/
+*.log.*
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.bak
+*.cache
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 配置文件（如果包含敏感信息，但保留示例文件）
+# config.yaml 应该提交，但如果有本地配置可以忽略
+config.local.yaml
+
+# Docker 相关
+.dockerignore
+docker-compose.override.yml
+
+# 构建输出
+dist/
+build/
+bin/
+out/
+
+# 测试相关
+test-results/
+*.test.json
+
