@@ -1,4 +1,4 @@
-package service
+package user
 
 import (
 	"context"
@@ -11,20 +11,20 @@ import (
 	"mygoproject/internal/util"
 )
 
-type AuthService struct {
+type Service struct {
 	userRepo  *repository.UserRepository
 	jwtSecret string
 }
 
-func NewAuthService(userRepo *repository.UserRepository, jwtSecret string) *AuthService {
-	return &AuthService{
+func NewService(userRepo *repository.UserRepository, jwtSecret string) *Service {
+	return &Service{
 		userRepo:  userRepo,
 		jwtSecret: jwtSecret,
 	}
 }
 
 // Register creates a new user.
-func (s *AuthService) Register(ctx context.Context, email, password string) (*model.User, error) {
+func (s *Service) Register(ctx context.Context, email, password string) (*model.User, error) {
 	existing, err := s.userRepo.FindByEmail(ctx, email)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
@@ -52,7 +52,7 @@ func (s *AuthService) Register(ctx context.Context, email, password string) (*mo
 }
 
 // Login checks user credentials and returns JWT.
-func (s *AuthService) Login(ctx context.Context, email, password string) (string, error) {
+func (s *Service) Login(ctx context.Context, email, password string) (string, error) {
 	u, err := s.userRepo.FindByEmail(ctx, email)
 	if err != nil {
 		return "", errors.New("invalid email or password")

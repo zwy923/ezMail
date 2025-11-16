@@ -1,4 +1,4 @@
-package service
+package email
 
 import (
 	"context"
@@ -9,20 +9,20 @@ import (
 	"mygoproject/internal/repository"
 )
 
-type MailService struct {
+type Service struct {
 	emailRepo *repository.EmailRepository
-	producer  *mq.Producer
+	publisher *mq.Publisher
 }
 
-func NewMailService(emailRepo *repository.EmailRepository, producer *mq.Producer) *MailService {
-	return &MailService{
+func NewService(emailRepo *repository.EmailRepository, publisher *mq.Publisher) *Service {
+	return &Service{
 		emailRepo: emailRepo,
-		producer:  producer,
+		publisher: publisher,
 	}
 }
 
 // CreateRawAndPublish creates a raw email record and publishes `email.received` event.
-func (s *MailService) CreateRawAndPublish(ctx context.Context, userID int, subject, body string) (int, error) {
+func (s *Service) CreateRawAndPublish(ctx context.Context, userID int, subject, body string) (int, error) {
 	raw := &model.EmailRaw{
 		UserID:    userID,
 		Subject:   subject,
@@ -47,7 +47,7 @@ func (s *MailService) CreateRawAndPublish(ctx context.Context, userID int, subje
 	}
 
 	// 发布事件，使用 routing key "email.received"
-	if err := s.producer.Publish("email.received", payload); err != nil {
+	if err := s.publisher.Publish("email.received", payload); err != nil {
 		return 0, err
 	}
 

@@ -1,7 +1,8 @@
-package api
+package httpserver
 
 import (
 	"github.com/gin-gonic/gin"
+	"mygoproject/internal/handler"
 )
 
 type Router struct {
@@ -9,9 +10,9 @@ type Router struct {
 }
 
 func NewRouter(
-	authHandler *AuthHandler,
-	mailHandler *MailHandler,
-	emailQueryHandler *EmailQueryHandler,
+	authHandler *handler.AuthHandler,
+	mailHandler *handler.MailHandler,
+	emailQueryHandler *handler.EmailQueryHandler,
 	jwtSecret string,
 ) *Router {
 	r := gin.Default()

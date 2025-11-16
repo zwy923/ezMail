@@ -1,17 +1,17 @@
-package api
+package handler
 
 import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"mygoproject/internal/service/api"
+	"mygoproject/internal/service/email"
 )
 
 type MailHandler struct {
-	mailService *service.MailService
+	mailService *email.Service
 }
 
-func NewMailHandler(mailService *service.MailService) *MailHandler {
+func NewMailHandler(mailService *email.Service) *MailHandler {
 	return &MailHandler{
 		mailService: mailService,
 	}

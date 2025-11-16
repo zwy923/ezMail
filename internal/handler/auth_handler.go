@@ -1,17 +1,17 @@
-package api
+package handler
 
 import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"mygoproject/internal/service/api"
+	"mygoproject/internal/service/user"
 )
 
 type AuthHandler struct {
-	authService *service.AuthService
+	authService *user.Service
 }
 
-func NewAuthHandler(authService *service.AuthService) *AuthHandler {
+func NewAuthHandler(authService *user.Service) *AuthHandler {
 	return &AuthHandler{authService: authService}
 }
 

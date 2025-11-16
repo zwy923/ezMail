@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
 )
 
 type MessageHandler func(ctx context.Context, data json.RawMessage) error
@@ -16,32 +17,27 @@ type Consumer struct {
 	routingKey string
 	handler    MessageHandler
 	conn       *amqp091.Connection
+	logger     *zap.Logger
 }
 
 // NewConsumer creates a consumer for a specific routing key.
 // Each routing key gets its own queue, e.g., "email.received" -> "email.received.q"
-func NewConsumer(url, queueName, routingKey string) (*Consumer, error) {
-	conn, err := amqp091.Dial(url)
+func NewConsumer(url, queueName, routingKey string, logger *zap.Logger) (*Consumer, error) {
+	conn, err := NewConnection(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
+		return nil, err
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
 	// 声明 exchange
-	err = ch.ExchangeDeclare(
-		ExchangeName,
-		"topic",
-		true,  // durable
-		false, // auto-delete
-		false, // internal
-		false, // no-wait
-		nil,
-	)
-	if err != nil {
+	if err := DeclareExchange(ch); err != nil {
+		ch.Close()
+		conn.Close()
 		return nil, fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
@@ -70,13 +66,18 @@ func NewConsumer(url, queueName, routingKey string) (*Consumer, error) {
 		return nil, fmt.Errorf("failed to bind queue: %w", err)
 	}
 
-	fmt.Printf("[RabbitMQ] Consumer started for routingKey=%s, queue=%s\n", routingKey, queueName)
+	logger.Info("Consumer initialized",
+		zap.String("routing_key", routingKey),
+		zap.String("queue", queueName),
+		zap.String("exchange", ExchangeName),
+	)
 
 	return &Consumer{
 		conn:       conn,
 		channel:    ch,
 		queue:      q,
 		routingKey: routingKey,
+		logger:     logger,
 	}, nil
 }
 
@@ -112,15 +113,28 @@ func (c *Consumer) StartConsuming() error {
 		return fmt.Errorf("failed to register consumer: %w", err)
 	}
 
-	fmt.Printf("[RabbitMQ] Consumer started for routing key: %s, queue: %s\n", c.routingKey, c.queue.Name)
+	c.logger.Info("Consumer started consuming messages",
+		zap.String("routing_key", c.routingKey),
+		zap.String("queue", c.queue.Name),
+	)
 
 	// 直接在这里处理消息，不嵌套 goroutine
 	for msg := range msgs {
 		ctx := context.Background()
 
+		c.logger.Debug("Received message",
+			zap.String("routing_key", c.routingKey),
+			zap.String("queue", c.queue.Name),
+			zap.Int("message_size", len(msg.Body)),
+		)
+
 		// 直接使用消息体，不再解析 Event 结构
 		if err := c.handler(ctx, msg.Body); err != nil {
-			fmt.Printf("[Consumer] handler error for %s: %v\n", c.routingKey, err)
+			c.logger.Error("Handler error",
+				zap.String("routing_key", c.routingKey),
+				zap.String("queue", c.queue.Name),
+				zap.Error(err),
+			)
 			// 处理失败，拒绝并重新入队
 			_ = msg.Nack(false, true)
 			continue
@@ -128,7 +142,15 @@ func (c *Consumer) StartConsuming() error {
 
 		// 处理成功，确认消息
 		if err := msg.Ack(false); err != nil {
-			fmt.Printf("[Consumer] failed to ack message for %s: %v\n", c.routingKey, err)
+			c.logger.Error("Failed to ack message",
+				zap.String("routing_key", c.routingKey),
+				zap.Error(err),
+			)
+		} else {
+			c.logger.Debug("Message processed successfully",
+				zap.String("routing_key", c.routingKey),
+				zap.String("queue", c.queue.Name),
+			)
 		}
 	}
 

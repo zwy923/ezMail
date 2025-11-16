@@ -1,10 +1,11 @@
 package util
 
 import (
-	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // GenerateJWT creates a token for a given user ID.

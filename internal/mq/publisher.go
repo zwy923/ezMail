@@ -7,47 +7,37 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-const (
-	ExchangeName = "events"
-)
-
-type Producer struct {
+type Publisher struct {
 	conn    *amqp091.Connection
 	channel *amqp091.Channel
 }
 
-func NewProducer(url string) (*Producer, error) {
-	conn, err := amqp091.Dial(url)
+func NewPublisher(url string) (*Publisher, error) {
+	conn, err := NewConnection(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
+		return nil, err
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
 	// 声明 topic exchange
-	err = ch.ExchangeDeclare(
-		ExchangeName,
-		"topic", // topic exchange 支持 routing key 模式匹配
-		true,    // durable
-		false,   // auto-deleted
-		false,   // internal
-		false,   // no-wait
-		nil,     // arguments
-	)
-	if err != nil {
+	if err := DeclareExchange(ch); err != nil {
+		ch.Close()
+		conn.Close()
 		return nil, fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
-	return &Producer{
+	return &Publisher{
 		conn:    conn,
 		channel: ch,
 	}, nil
 }
 
-func (p *Producer) Close() {
+func (p *Publisher) Close() {
 	if p.channel != nil {
 		_ = p.channel.Close()
 	}
@@ -58,7 +48,7 @@ func (p *Producer) Close() {
 
 // Publish publishes an event to the exchange with the given routing key.
 // routingKey: e.g., "email.received", "user.registered"
-func (p *Producer) Publish(routingKey string, payload any) error {
+func (p *Publisher) Publish(routingKey string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
-	"mygoproject/config"
+	"mygoproject/internal/config"
 )
 
 func NewConnection(cfg config.DBConfig, logger *zap.Logger) (*pgxpool.Pool, error) {
