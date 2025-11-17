@@ -1,0 +1,104 @@
+apisix:
+  node_listen: 9080
+  enable_admin: true
+  enable_admin_cors: true
+  enable_debug: false
+  enable_dev_mode: false
+  enable_reuseport: true
+  enable_ipv6: false
+  config_center: yaml
+  enable_server_tokens: false
+
+nginx_config:
+  error_log_level: warn
+  access_log_format: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time'
+  client_max_body_size: 1m
+
+etcd:
+  host:
+    - "http://etcd:2379"
+  prefix: "/apisix"
+  timeout: 30
+
+deployment:
+  role: traditional
+  role_traditional:
+    config_provider: yaml
+  admin:
+    admin_key:
+      - name: admin
+        key: edd1c9f034335f136f87ad84b625c8f1
+        role: admin
+
+plugins:
+  - real-ip
+  - client-control
+  - proxy-control
+  - request-id
+  - zipkin
+  - ext-plugin-pre-req
+  - fault-injection
+  - serverless-pre-function
+  - serverless-post-function
+  - openid-connect
+  - casbin
+  - authz-casbin
+  - wolf-rbac
+  - ldap-auth
+  - hmac-auth
+  - basic-auth
+  - jwt-auth
+  - authz-keycloak
+  - key-auth
+  - consumer-restriction
+  - opa
+  - forward-auth
+  - oauth
+  - ip-restriction
+  - grpc-transcode
+  - referer-restriction
+  - csrf
+  - uri-blocker
+  - request-validation
+  - api-breaker
+  - limit-req
+  - limit-count
+  - limit-conn
+  - prometheus
+  - node-status
+  - redirect
+  - response-rewrite
+  - server-info
+  - proxy-rewrite
+  - route-mirror
+  - grpc-web
+  - batch-requests
+  - cors
+  - tcp-logger
+  - udp-logger
+  - http-logger
+  - kafka-logger
+  - rocketmq-logger
+  - skywalking-logger
+  - google-cloud-logging
+  - sls-logger
+  - datadog-logger
+  - loki-logger
+  - splunk-hec-logging
+  - file-logger
+  - syslog
+  - loggly
+  - error-log-logger
+  - opentelemetry
+  - ext-plugin-post-req
+  - ext-plugin-post-resp
+  - ext-plugin-access
+  - example-plugin
+  - echo
+
+stream_plugins:
+  - ip-restriction
+  - limit-conn
+  - prometheus
+  - mqtt-proxy
+

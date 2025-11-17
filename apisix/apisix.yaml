@@ -1,0 +1,89 @@
+routes:
+  # 公开路由 - 认证相关
+  - id: 1
+    uri: /api/register
+    methods:
+      - POST
+    upstream:
+      nodes:
+        "host.docker.internal:8080": 1
+      type: roundrobin
+    plugins:
+      proxy-rewrite:
+        regex_uri:
+          - "^/api(/.*)"
+          - "$1"
+
+  - id: 2
+    uri: /api/login
+    methods:
+      - POST
+    upstream:
+      nodes:
+        "host.docker.internal:8080": 1
+      type: roundrobin
+    plugins:
+      proxy-rewrite:
+        regex_uri:
+          - "^/api(/.*)"
+          - "$1"
+
+  # 受保护路由 - 需要 JWT 认证
+  - id: 3
+    uri: /api/email/simulate
+    methods:
+      - POST
+    upstream:
+      nodes:
+        "host.docker.internal:8080": 1
+      type: roundrobin
+    plugins:
+      jwt-auth:
+        header: "Authorization"
+        query: "jwt"
+        cookie: "jwt"
+        secret: "zwy923"  # 与 api-gateway 的 JWT_SECRET 保持一致
+        algorithm: "HS256"
+      proxy-rewrite:
+        regex_uri:
+          - "^/api(/.*)"
+          - "$1"
+
+  - id: 4
+    uri: /api/emails
+    methods:
+      - GET
+    upstream:
+      nodes:
+        "host.docker.internal:8080": 1
+      type: roundrobin
+    plugins:
+      jwt-auth:
+        header: "Authorization"
+        query: "jwt"
+        cookie: "jwt"
+        secret: "zwy923"
+        algorithm: "HS256"
+      proxy-rewrite:
+        regex_uri:
+          - "^/api(/.*)"
+          - "$1"
+
+  # 健康检查
+  - id: 5
+    uri: /health
+    methods:
+      - GET
+    upstream:
+      nodes:
+        "host.docker.internal:8080": 1
+      type: roundrobin
+
+consumers:
+  - username: api-user
+    plugins:
+      jwt-auth:
+        key: user-key
+        secret: zwy923
+        algorithm: HS256
+

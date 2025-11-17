@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS emails_metadata (
     email_id INT NOT NULL UNIQUE REFERENCES emails_raw(id) ON DELETE CASCADE,
     category VARCHAR(255) NOT NULL,
     confidence FLOAT NOT NULL DEFAULT 1.0,
+    status VARCHAR(50) NOT NULL DEFAULT 'success',  -- merged field
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -61,15 +62,6 @@ CREATE TABLE IF NOT EXISTS notifications_log (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Index: faster querying logs by user
-CREATE INDEX IF NOT EXISTS idx_notifications_log_user
-    ON notifications_log(user_id);
-
--- Index: faster querying logs by email
-CREATE INDEX IF NOT EXISTS idx_notifications_log_email
-    ON notifications_log(email_id);
-
-
 
 -- ==============================
 -- User Notifications (inbox)
@@ -83,15 +75,29 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_user
-    ON notifications(user_id);
-
 
 -- ==============================
--- Useful indexes for email queries
+-- Useful indexes
 -- ==============================
+
+-- For emails_raw
 CREATE INDEX IF NOT EXISTS idx_emails_raw_user
     ON emails_raw(user_id);
 
+-- For emails_metadata
 CREATE INDEX IF NOT EXISTS idx_emails_metadata_email
     ON emails_metadata(email_id);
+
+CREATE INDEX IF NOT EXISTS idx_emails_metadata_status
+    ON emails_metadata(status);
+
+-- For notifications_log
+CREATE INDEX IF NOT EXISTS idx_notifications_log_user
+    ON notifications_log(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_log_email
+    ON notifications_log(email_id);
+
+-- For notifications
+CREATE INDEX IF NOT EXISTS idx_notifications_user
+    ON notifications(user_id);

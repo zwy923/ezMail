@@ -82,6 +82,10 @@ config.local.yaml
 .dockerignore
 docker-compose.override.yml
 
+# APISIX 相关
+apisix/logs/
+apisix/conf/apisix.yaml.bak
+
 # 构建输出
 dist/
 build/

@@ -72,6 +72,11 @@ func OverrideRedisFromEnv(cfg *RedisConfig) {
 	if password := os.Getenv("REDIS_PASSWORD"); password != "" {
 		cfg.Password = password
 	}
+	if db := os.Getenv("REDIS_DB"); db != "" {
+		if d, err := strconv.Atoi(db); err == nil {
+			cfg.DB = d
+		}
+	}
 }
 
 // OverrideJWTFromEnv 从环境变量覆盖JWT配置
@@ -87,4 +92,3 @@ func OverrideServerFromEnv(cfg *ServerConfig) {
 		cfg.Port = port
 	}
 }
-
