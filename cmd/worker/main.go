@@ -6,13 +6,21 @@ import (
 	"mygoproject/internal/mq"
 	"mygoproject/internal/mqhandler"
 	"mygoproject/internal/repository"
-
+	 redisclient "mygoproject/internal/redis"
+	"mygoproject/internal/util"
 	"go.uber.org/zap"
+	"time"
 )
 
 func main() {
 	// Load config
 	cfg := config.Load()
+
+	// Init Redis
+	rdb := redisclient.NewRedisClient(cfg.Redis)
+	defer rdb.Close()
+
+	deduper := util.NewDeduper(rdb, time.Hour)
 
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
@@ -37,7 +45,8 @@ func main() {
 	// Init Handlers
 	classifyHandler := mqhandler.NewEmailReceivedClassifyHandler(emailRepo, metadataRepo, logger)
 	notiLogHandler := mqhandler.NewEmailReceivedNotificationLogHandler(notiLogRepo, logger)
-	notiHandler := mqhandler.NewEmailReceivedNotificationHandler(notiRepo, logger)
+	notiHandler := mqhandler.NewEmailReceivedNotificationHandler(notiRepo, logger, deduper)
+	
 
 	// (1) Consumer for classification
 	logger.Info("Initializing classify consumer", zap.String("queue", "email.received.classify.q"))

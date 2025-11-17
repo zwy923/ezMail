@@ -7,20 +7,26 @@ import (
 	"mygoproject/internal/model"
 	"mygoproject/internal/mq"
 	"mygoproject/internal/repository"
-
+	"mygoproject/internal/util"
 	"go.uber.org/zap"
 )
 
 type EmailReceivedNotificationHandler struct {
 	repo   *repository.NotificationRepository
 	logger *zap.Logger
+	deduper *util.Deduper
 }
 
-func NewEmailReceivedNotificationHandler(repo *repository.NotificationRepository, logger *zap.Logger) *EmailReceivedNotificationHandler {
-	return &EmailReceivedNotificationHandler{
-		repo:   repo,
-		logger: logger,
-	}
+func NewEmailReceivedNotificationHandler(
+    repo *repository.NotificationRepository,
+    logger *zap.Logger,
+    deduper *util.Deduper,
+) *EmailReceivedNotificationHandler {
+    return &EmailReceivedNotificationHandler{
+        repo:    repo,
+        logger:  logger,
+        deduper: deduper,
+    }
 }
 
 // HandleEmailReceived -- 写入 notifications 站内通知
@@ -30,6 +36,14 @@ func (h *EmailReceivedNotificationHandler) HandleEmailReceived(ctx context.Conte
 		h.logger.Error("Failed to unmarshal email received payload", zap.Error(err))
 		return err
 	}
+
+	// ---- 新增：Redis 去重 ----
+    if !h.deduper.AcquireOnce(ctx, "notification", p.EmailID) {
+        h.logger.Info("Duplicate notification event skipped",
+            zap.Int("email_id", p.EmailID),
+            zap.Int("user_id", p.UserID))
+        return nil
+    }
 
 	h.logger.Info("Creating notification",
 		zap.Int("email_id", p.EmailID),
