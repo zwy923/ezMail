@@ -4,24 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
 
+// contains 检查字符串是否包含子串（不区分大小写）
+func contains(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
 type MessageHandler func(ctx context.Context, data json.RawMessage) error
 
 type Consumer struct {
-	channel    *amqp091.Channel
-	queue      amqp091.Queue
-	routingKey string
-	handler    MessageHandler
-	conn       *amqp091.Connection
-	logger     *zap.Logger
+	channel      *amqp091.Channel
+	queue        amqp091.Queue
+	routingKey   string
+	handler      MessageHandler
+	conn         *amqp091.Connection
+	logger       *zap.Logger
+	dlqPublisher *Publisher // 用于发送到死信队列
+	maxRetries   int        // 最大重试次数
 }
 
 // NewConsumer creates a consumer for a specific routing key.
 func NewConsumer(url, queueName, routingKey string, logger *zap.Logger) (*Consumer, error) {
+	return NewConsumerWithRetry(url, queueName, routingKey, logger, 3)
+}
+
+// NewConsumerWithRetry creates a consumer with retry and DLQ support.
+func NewConsumerWithRetry(url, queueName, routingKey string, logger *zap.Logger, maxRetries int) (*Consumer, error) {
 	conn, err := NewConnection(url)
 	if err != nil {
 		return nil, err
@@ -33,12 +46,29 @@ func NewConsumer(url, queueName, routingKey string, logger *zap.Logger) (*Consum
 		return nil, fmt.Errorf("failed to open channel: %w", err)
 	}
 
+	// 声明主 Exchange
 	if err := DeclareExchange(ch); err != nil {
 		ch.Close()
 		conn.Close()
 		return nil, fmt.Errorf("failed to declare exchange: %w", err)
 	}
 
+	// 声明 DLQ Exchange
+	if err := DeclareDLQExchange(ch); err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to declare DLQ exchange: %w", err)
+	}
+
+	// 声明 DLQ Queue
+	_, err = DeclareDLQQueue(ch, routingKey)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to declare DLQ queue: %w", err)
+	}
+
+	// 声明主 Queue
 	q, err := ch.QueueDeclare(
 		queueName,
 		true,
@@ -62,18 +92,27 @@ func NewConsumer(url, queueName, routingKey string, logger *zap.Logger) (*Consum
 		return nil, fmt.Errorf("failed to bind queue: %w", err)
 	}
 
+	// 创建 DLQ Publisher（复用同一个连接）
+	dlqPublisher := &Publisher{
+		conn:    conn,
+		channel: ch,
+	}
+
 	logger.Info("Consumer initialized",
 		zap.String("routing_key", routingKey),
 		zap.String("queue", queueName),
 		zap.String("exchange", ExchangeName),
+		zap.Int("max_retries", maxRetries),
 	)
 
 	return &Consumer{
-		conn:       conn,
-		channel:    ch,
-		queue:      q,
-		routingKey: routingKey,
-		logger:     logger,
+		conn:         conn,
+		channel:     ch,
+		queue:       q,
+		routingKey:  routingKey,
+		logger:      logger,
+		dlqPublisher: dlqPublisher,
+		maxRetries:  maxRetries,
 	}, nil
 }
 
@@ -143,14 +182,77 @@ func (c *Consumer) StartConsuming() error {
 				}
 			}()
 
+			// 获取重试次数（从消息头）
+			retryCount := 0
+			if retryHeader, ok := msg.Headers["x-retry-count"]; ok {
+				if count, ok := retryHeader.(int64); ok {
+					retryCount = int(count)
+				}
+			}
+
 			// 执行业务处理
 			if err := c.handler(ctx, msg.Body); err != nil {
 				c.logger.Error("Handler error",
 					zap.String("routing_key", c.routingKey),
 					zap.String("queue", c.queue.Name),
+					zap.Int("retry_count", retryCount),
 					zap.Error(err),
 				)
-				// 业务失败 → 拒绝消息并重新入队，让 MQ 重试
+
+				// 检查错误类型：JSON 解析错误直接发送到 DLQ，不重试
+				errStr := err.Error()
+				if contains(errStr, "json_unmarshal_error") || contains(errStr, "json:") {
+					c.logger.Warn("JSON unmarshal error, sending directly to DLQ",
+						zap.String("routing_key", c.routingKey),
+						zap.Error(err),
+					)
+					
+					// 发送到死信队列
+					if dlqErr := c.dlqPublisher.PublishToDLQ(c.routingKey, msg.Body, err.Error()); dlqErr != nil {
+						c.logger.Error("Failed to publish to DLQ",
+							zap.String("routing_key", c.routingKey),
+							zap.Error(dlqErr),
+						)
+					}
+					
+					// Ack 掉原消息（已发送到 DLQ）
+					if err := msg.Ack(false); err != nil {
+						c.logger.Error("Failed to ack message after DLQ",
+							zap.String("routing_key", c.routingKey),
+							zap.Error(err),
+						)
+					}
+					return
+				}
+
+				// 检查是否超过最大重试次数
+				if retryCount >= c.maxRetries {
+					c.logger.Warn("Max retries exceeded, sending to DLQ",
+						zap.String("routing_key", c.routingKey),
+						zap.Int("retry_count", retryCount),
+						zap.Int("max_retries", c.maxRetries),
+					)
+					
+					// 发送到死信队列
+					if dlqErr := c.dlqPublisher.PublishToDLQ(c.routingKey, msg.Body, err.Error()); dlqErr != nil {
+						c.logger.Error("Failed to publish to DLQ",
+							zap.String("routing_key", c.routingKey),
+							zap.Error(dlqErr),
+						)
+					}
+					
+					// Ack 掉原消息（已发送到 DLQ）
+					if err := msg.Ack(false); err != nil {
+						c.logger.Error("Failed to ack message after DLQ",
+							zap.String("routing_key", c.routingKey),
+							zap.Error(err),
+						)
+					}
+					return
+				}
+
+				// 未超过最大重试次数 → 拒绝消息并重新入队
+				// 注意：RabbitMQ 不会自动增加重试计数，需要手动设置
 				if err := msg.Nack(false, true); err != nil {
 					c.logger.Error("Failed to nack message",
 						zap.String("routing_key", c.routingKey),

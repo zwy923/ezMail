@@ -72,8 +72,16 @@ func IsRetryableError(err error) (bool, string) {
 	}
 
 	// HTTP errors - 根据状态码判断
+	if strings.Contains(errStr, "agent service returned 5xx") || strings.Contains(errStr, "5xx error") {
+		// Agent service 5xx 错误 - 可重试
+		return true, "agent_service_5xx"
+	}
+	if strings.Contains(errStr, "agent service timeout") || strings.Contains(errStr, "timeout") {
+		// Agent service 超时 - 可重试
+		return true, "agent_service_timeout"
+	}
 	if strings.Contains(errStr, "agent service returned error") {
-		// Agent service 错误 - 可重试（少量）
+		// Agent service 其他错误 - 可重试（少量）
 		return true, "agent_service_error"
 	}
 	if strings.Contains(errStr, "failed to call agent service") {

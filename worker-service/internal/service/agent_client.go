@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,7 +20,7 @@ func NewAgentClient(baseURL string) *AgentClient {
 	return &AgentClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 5 * time.Second, // 5秒超时，避免 worker 卡死
 		},
 	}
 }
@@ -56,12 +57,26 @@ func (c *AgentClient) ClassifyEmail(ctx context.Context, subject, body string) (
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// 检查是否是超时错误（HTTP client timeout 或 context deadline）
+		errStr := err.Error()
+		if ctx.Err() == context.DeadlineExceeded || 
+		   strings.Contains(errStr, "timeout") || 
+		   strings.Contains(errStr, "deadline exceeded") ||
+		   strings.Contains(errStr, "context deadline exceeded") {
+			return nil, fmt.Errorf("agent service timeout: %w", err)
+		}
 		return nil, fmt.Errorf("failed to call agent service: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// 处理非 200 状态码
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		// 500 错误视为可重试
+		if resp.StatusCode >= 500 {
+			return nil, fmt.Errorf("agent service returned 5xx error: %d - %s", resp.StatusCode, string(bodyBytes))
+		}
+		// 4xx 错误视为不可重试
 		return nil, fmt.Errorf("agent service returned error: %d - %s", resp.StatusCode, string(bodyBytes))
 	}
 

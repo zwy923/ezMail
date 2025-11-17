@@ -43,18 +43,21 @@ func (h *EmailReceivedNotificationHandler) HandleEmailReceived(ctx context.Conte
 
 	var p mqcontracts.EmailReceivedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		// JSON decode 错误 - 不可重试
-		h.logger.Error("Failed to unmarshal email received payload (non-retryable)",
+		// JSON decode 错误 - 不可重试，发送到 DLQ
+		h.logger.Error("Failed to unmarshal email received payload (non-retryable, sending to DLQ)",
 			zap.Error(err),
+			zap.String("raw_payload", string(raw)),
 		)
-		return nil // 返回 nil，让 consumer ack 掉
+		return fmt.Errorf("json_unmarshal_error: %w", err)
 	}
 
-	// Redis 去重
+	// Redis 去重：确保不重复写通知
 	if !h.deduper.AcquireOnce(ctx, "notification", p.EmailID) {
-		h.logger.Info("Duplicate notification event skipped",
+		h.logger.Info("Skipped duplicated event",
+			zap.String("handler", "notification"),
 			zap.Int("email_id", p.EmailID),
-			zap.Int("user_id", p.UserID))
+			zap.Int("user_id", p.UserID),
+		)
 		return nil
 	}
 

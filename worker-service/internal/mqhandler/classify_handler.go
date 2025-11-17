@@ -3,13 +3,20 @@ package mqhandler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	mqcontracts "mygoproject/contracts/mq"
 	"mygoproject/pkg/util"
+	"strings"
 	"worker-service/internal/repository"
 	"worker-service/internal/service"
 
 	"go.uber.org/zap"
 )
+
+// contains 检查字符串是否包含子串（不区分大小写）
+func contains(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
 
 const (
 	maxRetries = 5 // 最大重试次数
@@ -20,6 +27,7 @@ type EmailReceivedClassifyHandler struct {
 	metadataRepo *repository.MetadataRepository
 	agentClient  *service.AgentClient
 	retryCounter *util.RetryCounter
+	deduper      *util.Deduper
 	logger       *zap.Logger
 }
 
@@ -28,6 +36,7 @@ func NewEmailReceivedClassifyHandler(
 	metadataRepo *repository.MetadataRepository,
 	agentClient *service.AgentClient,
 	retryCounter *util.RetryCounter,
+	deduper *util.Deduper,
 	logger *zap.Logger,
 ) *EmailReceivedClassifyHandler {
 	return &EmailReceivedClassifyHandler{
@@ -35,6 +44,7 @@ func NewEmailReceivedClassifyHandler(
 		metadataRepo: metadataRepo,
 		agentClient:  agentClient,
 		retryCounter: retryCounter,
+		deduper:      deduper,
 		logger:       logger,
 	}
 }
@@ -54,12 +64,13 @@ func (h *EmailReceivedClassifyHandler) HandleEmailReceived(ctx context.Context, 
 
 	var p mqcontracts.EmailReceivedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		// JSON decode 错误 - 不可重试
-		h.logger.Error("Failed to unmarshal email received payload (non-retryable)",
+		// JSON decode 错误 - 不可重试，发送到 DLQ
+		h.logger.Error("Failed to unmarshal email received payload (non-retryable, sending to DLQ)",
 			zap.Error(err),
+			zap.String("raw_payload", string(raw)),
 		)
-		// 返回 nil，让 consumer ack 掉这条消息
-		return nil
+		// 返回特殊错误，让 consumer 发送到 DLQ
+		return fmt.Errorf("json_unmarshal_error: %w", err)
 	}
 
 	h.logger.Info("Processing email classification",
@@ -93,6 +104,31 @@ func (h *EmailReceivedClassifyHandler) HandleEmailReceived(ctx context.Context, 
 		h.logger.Debug("Email already classified, skipping",
 			zap.Int("email_id", p.EmailID),
 		)
+		return nil
+	}
+
+	// Redis 去重：避免重复处理（减少 DB UNIQUE 错误日志）
+	if !h.deduper.AcquireOnce(ctx, "classify", p.EmailID) {
+		h.logger.Info("Skipped duplicated classify event",
+			zap.Int("email_id", p.EmailID),
+			zap.Int("user_id", p.UserID),
+		)
+		// 如果 metadata 已存在，只需更新状态
+		if metadataExists && email.Status != "classified" {
+			if err := h.emailRepo.UpdateStatus(ctx, p.EmailID, "classified"); err != nil {
+				isRetryable, errType := util.IsRetryableError(err)
+				h.logger.Error("Failed to update email status",
+					zap.Int("email_id", p.EmailID),
+					zap.String("error_type", errType),
+					zap.Bool("retryable", isRetryable),
+					zap.Error(err),
+				)
+				if !isRetryable {
+					return nil
+				}
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -137,7 +173,7 @@ func (h *EmailReceivedClassifyHandler) HandleEmailReceived(ctx context.Context, 
 		zap.Int64("max_retries", maxRetries),
 	)
 
-	// 调用 agent-service 进行分类
+	// 调用 agent-service 进行分类（带超时控制）
 	h.logger.Info("Calling agent-service for classification",
 		zap.Int("email_id", p.EmailID),
 		zap.Int64("retry_count", retryCount),
@@ -147,6 +183,55 @@ func (h *EmailReceivedClassifyHandler) HandleEmailReceived(ctx context.Context, 
 	if err != nil {
 		// 检查错误类型
 		isRetryable, errType := util.IsRetryableError(err)
+
+		// 检查是否是超时或 500 错误
+		isTimeout := contains(err.Error(), "timeout") || contains(err.Error(), "context deadline exceeded")
+		is5xx := contains(err.Error(), "5xx")
+
+		// 如果是超时或 500 错误，且是第一次尝试，可以重试一次
+		if (isTimeout || is5xx) && retryCount == 1 {
+			h.logger.Warn("Agent service timeout/5xx on first attempt, will retry",
+				zap.Int("email_id", p.EmailID),
+				zap.String("error_type", errType),
+				zap.Bool("is_timeout", isTimeout),
+				zap.Bool("is_5xx", is5xx),
+			)
+			// 返回错误，让 consumer 重试
+			return err
+		}
+
+		// 如果超时或 500 错误且已重试过，写入 unknown 分类
+		if (isTimeout || is5xx) && retryCount > 1 {
+			h.logger.Warn("Agent service timeout/5xx after retry, writing unknown classification",
+				zap.Int("email_id", p.EmailID),
+				zap.String("error_type", errType),
+				zap.Int64("retry_count", retryCount),
+			)
+
+			// 写入 unknown 分类
+			if err := h.metadataRepo.Insert(ctx, p.EmailID, "unknown", 0.0); err != nil {
+				h.logger.Error("Failed to insert unknown classification",
+					zap.Int("email_id", p.EmailID),
+					zap.Error(err),
+				)
+				// 如果插入失败，返回错误让 consumer 重试
+				return err
+			}
+
+			// 记录错误到失败状态
+			if err := h.metadataRepo.InsertFailed(ctx, p.EmailID, "ai_timeout"); err != nil {
+				h.logger.Error("Failed to insert failed status",
+					zap.Int("email_id", p.EmailID),
+					zap.Error(err),
+				)
+			}
+
+			// 重置重试计数
+			h.retryCounter.Reset(ctx, retryKey)
+
+			// 返回 nil，让 consumer ack
+			return nil
+		}
 
 		h.logger.Error("Failed to classify email via agent-service",
 			zap.Int("email_id", p.EmailID),

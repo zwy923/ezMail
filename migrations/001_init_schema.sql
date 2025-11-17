@@ -1,6 +1,6 @@
 -- ==========================================================
--- 001_init_schema.sql
--- Initial schema for user auth, emails, metadata, notifications & logs
+-- 000_full_schema.sql
+-- Combined initial schema + failed_events
 -- ==========================================================
 
 -- ==============================
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS emails_metadata (
     email_id INT NOT NULL UNIQUE REFERENCES emails_raw(id) ON DELETE CASCADE,
     category VARCHAR(255) NOT NULL,
     confidence FLOAT NOT NULL DEFAULT 1.0,
-    status VARCHAR(50) NOT NULL DEFAULT 'success',  -- merged field
+    status VARCHAR(50) NOT NULL DEFAULT 'success',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -77,27 +77,56 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 
 -- ==============================
--- Useful indexes
+-- Failed Events (MQ publish failures)
+-- ==============================
+CREATE TABLE IF NOT EXISTS failed_events (
+    id SERIAL PRIMARY KEY,
+    email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_type VARCHAR(50) NOT NULL,
+    routing_key VARCHAR(100) NOT NULL,
+    payload JSONB NOT NULL,
+    error_message TEXT,
+    retry_count INT NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending / retried / failed
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+
+-- ==============================
+-- Indexes
 -- ==============================
 
--- For emails_raw
+-- emails_raw
 CREATE INDEX IF NOT EXISTS idx_emails_raw_user
     ON emails_raw(user_id);
 
--- For emails_metadata
+-- emails_metadata
 CREATE INDEX IF NOT EXISTS idx_emails_metadata_email
     ON emails_metadata(email_id);
 
 CREATE INDEX IF NOT EXISTS idx_emails_metadata_status
     ON emails_metadata(status);
 
--- For notifications_log
+-- notifications_log
 CREATE INDEX IF NOT EXISTS idx_notifications_log_user
     ON notifications_log(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_notifications_log_email
     ON notifications_log(email_id);
 
--- For notifications
+-- notifications
 CREATE INDEX IF NOT EXISTS idx_notifications_user
     ON notifications(user_id);
+
+-- failed_events
+CREATE INDEX IF NOT EXISTS idx_failed_events_status
+    ON failed_events(status);
+
+CREATE INDEX IF NOT EXISTS idx_failed_events_email
+    ON failed_events(email_id);
+
+CREATE INDEX IF NOT EXISTS idx_failed_events_pending_retry
+    ON failed_events(status, retry_count)
+    WHERE status = 'pending';

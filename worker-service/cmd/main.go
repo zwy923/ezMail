@@ -29,7 +29,7 @@ func main() {
 	rdb := redis.NewRedisClient(cfg.Redis)
 	defer rdb.Close()
 
-	deduper := util.NewDeduper(rdb, time.Hour)
+	deduper := util.NewDeduperWithLogger(rdb, time.Hour, logger)
 	retryCounter := util.NewRetryCounter(rdb, time.Hour)
 
 	// Init DB
@@ -51,7 +51,7 @@ func main() {
 	agentClient := service.NewAgentClient(cfg.AgentServiceURL)
 
 	// Init Handlers
-	classifyHandler := mqhandler.NewEmailReceivedClassifyHandler(emailRepo, metadataRepo, agentClient, retryCounter, logger)
+	classifyHandler := mqhandler.NewEmailReceivedClassifyHandler(emailRepo, metadataRepo, agentClient, retryCounter, deduper, logger)
 	notiLogHandler := mqhandler.NewEmailReceivedNotificationLogHandler(notiLogRepo, logger)
 	notiHandler := mqhandler.NewEmailReceivedNotificationHandler(notiRepo, logger, deduper)
 

@@ -38,9 +38,10 @@ func main() {
 
 	// Init Repositories
 	emailRepo := repository.NewEmailRepository(dbConn)
+	failedEventRepo := repository.NewFailedEventRepository(dbConn)
 
 	// Init Services
-	ingestService := ingest.NewService(emailRepo, publisher)
+	ingestService := ingest.NewService(emailRepo, failedEventRepo, publisher, logger)
 
 	// Init Handlers
 	ingestHandler := handler.NewIngestHandler(ingestService)
