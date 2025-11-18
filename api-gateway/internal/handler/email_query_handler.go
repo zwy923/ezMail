@@ -27,7 +27,10 @@ func (h *EmailQueryHandler) GetEmails(c *gin.Context) {
 
 	emails, err := h.emailRepo.ListEmailsWithMetadata(c.Request.Context(), userID.(int))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch emails"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to fetch emails",
+			"details": err.Error(),
+		})
 		return
 	}
 

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"worker-service/internal/model"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -14,37 +15,54 @@ func NewMetadataRepository(db *pgxpool.Pool) *MetadataRepository {
 	return &MetadataRepository{db: db}
 }
 
-// Insert inserts classification metadata with success status.
-// Uses ON CONFLICT DO NOTHING for idempotency (email_id has UNIQUE constraint).
-func (r *MetadataRepository) Insert(
+func (r *MetadataRepository) InsertDecision(
 	ctx context.Context,
 	emailID int,
-	category string,
-	confidence float64,
+	decision *model.AgentDecision,
 ) error {
-	query := `
-        INSERT INTO emails_metadata (email_id, category, confidence, status, created_at)
-        VALUES ($1, $2, $3, 'success', NOW())
-        ON CONFLICT (email_id) DO NOTHING
-    `
-	_, err := r.db.Exec(ctx, query, emailID, category, confidence)
+
+	sql := `
+		INSERT INTO emails_metadata
+			(email_id, categories, priority, summary, created_at, updated_at)
+		VALUES
+			($1, $2, $3, $4, NOW(), NOW())
+		ON CONFLICT (email_id)
+		DO UPDATE SET
+			categories = EXCLUDED.categories,
+			priority   = EXCLUDED.priority,
+			summary    = EXCLUDED.summary,
+			updated_at = NOW();
+	`
+
+	_, err := r.db.Exec(ctx, sql,
+		emailID,
+		decision.Categories,
+		decision.Priority,
+		decision.Summary,
+	)
+
 	return err
 }
 
-// InsertFailed inserts a failed classification record.
-// Uses ON CONFLICT DO UPDATE to allow retry attempts to update status.
-func (r *MetadataRepository) InsertFailed(
+func (r *MetadataRepository) InsertUnknown(
 	ctx context.Context,
 	emailID int,
-	reason string,
 ) error {
-	query := `
-        INSERT INTO emails_metadata (email_id, category, confidence, status, created_at)
-        VALUES ($1, 'unknown', 0.0, $2, NOW())
-        ON CONFLICT (email_id) DO UPDATE 
-        SET status = $2, created_at = NOW()
-    `
-	_, err := r.db.Exec(ctx, query, emailID, reason)
+
+	sql := `
+		INSERT INTO emails_metadata
+			(email_id, categories, priority, summary, created_at, updated_at)
+		VALUES
+			($1, ARRAY['unknown'], 'LOW', 'Classified as unknown due to AI errors', NOW(), NOW())
+		ON CONFLICT (email_id)
+		DO UPDATE SET
+			categories = ARRAY['unknown'],
+			priority   = 'LOW',
+			summary    = 'Classified as unknown due to AI errors',
+			updated_at = NOW();
+	`
+
+	_, err := r.db.Exec(ctx, sql, emailID)
 	return err
 }
 

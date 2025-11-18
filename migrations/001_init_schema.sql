@@ -1,10 +1,12 @@
 -- ==========================================================
--- 000_full_schema.sql
--- Combined initial schema + failed_events
+-- 000_full_schema.sql (Phase 2 Ready)
+-- Includes: users, emails, metadata, tasks, notifications,
+--           notification logs, failed events
 -- ==========================================================
 
+
 -- ==============================
--- Users table
+-- Users
 -- ==============================
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -39,16 +41,60 @@ CREATE TABLE IF NOT EXISTS emails_raw (
 
 
 -- ==============================
--- Classification metadata
+-- Agent Metadata (categories + summary + priority)
 -- ==============================
 CREATE TABLE IF NOT EXISTS emails_metadata (
+    email_id INT PRIMARY KEY REFERENCES emails_raw(id) ON DELETE CASCADE,
+
+    categories TEXT[] NOT NULL,         -- ["WORK","ACTION_REQUIRED"]
+    priority TEXT NOT NULL,             -- LOW / MEDIUM / HIGH
+    summary TEXT NOT NULL,              -- short 1-3 sentence summary
+
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+
+-- ==============================
+-- Tasks (Agent-created tasks)
+-- ==============================
+CREATE TABLE IF NOT EXISTS tasks (
     id SERIAL PRIMARY KEY,
-    email_id INT NOT NULL UNIQUE REFERENCES emails_raw(id) ON DELETE CASCADE,
-    category VARCHAR(255) NOT NULL,
-    confidence FLOAT NOT NULL DEFAULT 1.0,
-    status VARCHAR(50) NOT NULL DEFAULT 'success',
+
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
+
+    title TEXT NOT NULL,
+    due_date DATE,
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending / done
+
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_email ON tasks(email_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+
+-- ==============================
+-- Notification Inbox (user notifications)
+-- ==============================
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
+
+    channel TEXT NOT NULL,         -- EMAIL / PUSH / SMS
+    message TEXT NOT NULL,         -- "You have an urgent email"
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_email ON notifications(email_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
 
 
 -- ==============================
@@ -58,75 +104,44 @@ CREATE TABLE IF NOT EXISTS notifications_log (
     id SERIAL PRIMARY KEY,
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
-    message TEXT,
+
+    message TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-
--- ==============================
--- User Notifications (inbox)
--- ==============================
-CREATE TABLE IF NOT EXISTS notifications (
-    id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type VARCHAR(50) NOT NULL,
-    content TEXT NOT NULL,
-    is_read BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
+CREATE INDEX IF NOT EXISTS idx_notifications_log_user ON notifications_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_log_email ON notifications_log(email_id);
 
 
 -- ==============================
--- Failed Events (MQ publish failures)
+-- Failed Events (MQ failures)
 -- ==============================
 CREATE TABLE IF NOT EXISTS failed_events (
     id SERIAL PRIMARY KEY,
+
     email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
     event_type VARCHAR(50) NOT NULL,
     routing_key VARCHAR(100) NOT NULL,
     payload JSONB NOT NULL,
+
     error_message TEXT,
     retry_count INT NOT NULL DEFAULT 0,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending / retried / failed
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',   -- pending / retried / failed
+
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-
--- ==============================
--- Indexes
--- ==============================
-
--- emails_raw
-CREATE INDEX IF NOT EXISTS idx_emails_raw_user
-    ON emails_raw(user_id);
-
--- emails_metadata
-CREATE INDEX IF NOT EXISTS idx_emails_metadata_email
-    ON emails_metadata(email_id);
-
-CREATE INDEX IF NOT EXISTS idx_emails_metadata_status
-    ON emails_metadata(status);
-
--- notifications_log
-CREATE INDEX IF NOT EXISTS idx_notifications_log_user
-    ON notifications_log(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_notifications_log_email
-    ON notifications_log(email_id);
-
--- notifications
-CREATE INDEX IF NOT EXISTS idx_notifications_user
-    ON notifications(user_id);
-
--- failed_events
-CREATE INDEX IF NOT EXISTS idx_failed_events_status
-    ON failed_events(status);
-
-CREATE INDEX IF NOT EXISTS idx_failed_events_email
-    ON failed_events(email_id);
-
+CREATE INDEX IF NOT EXISTS idx_failed_events_status ON failed_events(status);
+CREATE INDEX IF NOT EXISTS idx_failed_events_email ON failed_events(email_id);
 CREATE INDEX IF NOT EXISTS idx_failed_events_pending_retry
-    ON failed_events(status, retry_count)
-    WHERE status = 'pending';
+    ON failed_events(status, retry_count) WHERE status = 'pending';
+
+
+-- ==============================
+-- Extra useful indexes
+-- ==============================
+CREATE INDEX IF NOT EXISTS idx_emails_raw_user ON emails_raw(user_id);
+CREATE INDEX IF NOT EXISTS idx_emails_raw_status ON emails_raw(status);

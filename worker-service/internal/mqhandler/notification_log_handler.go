@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"worker-service/internal/model"
 	"worker-service/internal/repository"
 	mqcontracts "mygoproject/contracts/mq"
+	dbcontracts "mygoproject/contracts/db"
 	util "mygoproject/pkg/util"
 
 	"go.uber.org/zap"
@@ -50,7 +50,7 @@ func (h *EmailReceivedNotificationLogHandler) HandleEmailReceived(ctx context.Co
 		zap.Int("user_id", p.UserID),
 	)
 
-	log := &model.NotificationLog{
+	log := &dbcontracts.NotificationLog{
 		UserID:  p.UserID,
 		EmailID: p.EmailID,
 		Message: fmt.Sprintf("User %d received a new email %d", p.UserID, p.EmailID),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"worker-service/internal/model"
 	"worker-service/internal/repository"
 	mqcontracts "mygoproject/contracts/mq"
 	util "mygoproject/pkg/util"
@@ -67,13 +66,7 @@ func (h *EmailReceivedNotificationHandler) HandleEmailReceived(ctx context.Conte
 		zap.String("subject", p.Subject),
 	)
 
-	notif := &model.Notification{
-		UserID:  p.UserID,
-		Type:    "new_email",
-		Content: fmt.Sprintf("你收到了新邮件：%s", p.Subject),
-	}
-
-	if err := h.repo.Insert(ctx, notif); err != nil {
+	if err := h.repo.InsertSimple(ctx, p.UserID, p.EmailID, "EMAIL", fmt.Sprintf("你收到了新邮件：%s", p.Subject)); err != nil {
 		isRetryable, errType := util.IsRetryableError(err)
 		h.logger.Error("Failed to insert notification",
 			zap.Int("email_id", p.EmailID),

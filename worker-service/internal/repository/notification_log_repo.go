@@ -2,7 +2,7 @@ package repository
 
 import (
 	"context"
-	"worker-service/internal/model"
+	"mygoproject/contracts/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,7 +15,7 @@ func NewNotificationLogRepository(db *pgxpool.Pool) *NotificationLogRepository {
 	return &NotificationLogRepository{db: db}
 }
 
-func (r *NotificationLogRepository) Insert(ctx context.Context, log *model.NotificationLog) error {
+func (r *NotificationLogRepository) Insert(ctx context.Context, log *db.NotificationLog) error {
 	query := `
         INSERT INTO notifications_log (user_id, email_id, message, created_at)
         VALUES ($1, $2, $3, NOW())

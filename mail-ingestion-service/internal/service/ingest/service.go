@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"mail-ingestion-service/internal/model"
 	"mail-ingestion-service/internal/repository"
+	dbcontracts "mygoproject/contracts/db"
 	mqcontracts "mygoproject/contracts/mq"
 	"mygoproject/pkg/mq"
 
@@ -34,10 +34,11 @@ func NewService(
 	}
 }
 
-// CreateRawAndPublish creates a raw email record and publishes `email.received` event.
 // 事务边界处理：如果 MQ 发布失败，记录到 failed_events 表并返回错误（让 api-gateway 重试）
 func (s *Service) CreateRawAndPublish(ctx context.Context, userID int, subject, body string) (int, error) {
-	raw := &model.EmailRaw{
+
+	// 1. Insert raw email
+	raw := &dbcontracts.Email{
 		UserID:    userID,
 		Subject:   subject,
 		Body:      body,
@@ -46,18 +47,13 @@ func (s *Service) CreateRawAndPublish(ctx context.Context, userID int, subject, 
 		CreatedAt: time.Now(),
 	}
 
-	// 1. 先插入数据库
 	emailID, err := s.emailRepo.CreateRawEmail(ctx, raw)
 	if err != nil {
-		s.logger.Error("Failed to create raw email",
-			zap.Int("user_id", userID),
-			zap.String("subject", subject),
-			zap.Error(err),
-		)
+		s.logger.Error("Failed to create raw email", zap.Error(err))
 		return 0, fmt.Errorf("failed to create email: %w", err)
 	}
 
-	// 2. 构造事件 payload
+	// 2. Construct event payload
 	payload := mqcontracts.EmailReceivedPayload{
 		EmailID:    emailID,
 		UserID:     userID,
@@ -66,42 +62,45 @@ func (s *Service) CreateRawAndPublish(ctx context.Context, userID int, subject, 
 		ReceivedAt: time.Now(),
 	}
 
-	// 3. 发布事件到 MQ
-	routingKey := "email.received"
-	if err := s.publisher.Publish(routingKey, payload); err != nil {
-		// MQ 发布失败：记录到 failed_events 表
-		s.logger.Error("Failed to publish MQ event, recording to failed_events",
-			zap.Int("email_id", emailID),
-			zap.Int("user_id", userID),
-			zap.String("routing_key", routingKey),
-			zap.Error(err),
-		)
-
-		// 记录失败事件（用于后续重试）
-		if recordErr := s.failedEventRepo.InsertFailedEvent(
-			ctx,
-			emailID,
-			userID,
-			"email.received",
-			routingKey,
-			payload,
-			err.Error(),
-		); recordErr != nil {
-			// 如果记录失败事件也失败，记录日志但继续返回原始错误
-			s.logger.Error("Failed to record failed event",
-				zap.Int("email_id", emailID),
-				zap.Error(recordErr),
-			)
-		}
-
-		// 返回错误，让 api-gateway 重试（5xx）
-		return emailID, fmt.Errorf("failed to publish event: %w", err)
+	// 3 routing keys
+	routingKeys := []string{
+		"email.received.agent",
+		"email.received.log",
+		"email.received.notify",
 	}
 
-	s.logger.Info("Email created and event published successfully",
+	// 3. Publish to all routing keys
+	for _, rk := range routingKeys {
+		if err := s.publisher.Publish(rk, payload); err != nil {
+			// log + write failed_events
+			s.logger.Error("Failed to publish MQ event",
+				zap.String("routing_key", rk),
+				zap.Int("email_id", emailID),
+				zap.Error(err),
+			)
+
+			// record failed event for retry
+			if recordErr := s.failedEventRepo.InsertFailedEvent(
+				ctx,
+				emailID,
+				userID,
+				"email.received", // event type
+				rk,
+				payload,
+				err.Error(),
+			); recordErr != nil {
+				s.logger.Error("Failed to record failed event", zap.Error(recordErr))
+			}
+
+			// return error → make gateway retry (5xx)
+			return emailID, fmt.Errorf("failed to publish event to %s: %w", rk, err)
+		}
+	}
+
+	s.logger.Info("Email created and all events published successfully",
 		zap.Int("email_id", emailID),
 		zap.Int("user_id", userID),
-		zap.String("routing_key", routingKey),
+		zap.Any("routing_keys", routingKeys),
 	)
 
 	return emailID, nil

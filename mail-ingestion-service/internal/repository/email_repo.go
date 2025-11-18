@@ -2,7 +2,7 @@ package repository
 
 import (
 	"context"
-	"mail-ingestion-service/internal/model"
+	"mygoproject/contracts/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -16,7 +16,7 @@ func NewEmailRepository(db *pgxpool.Pool) *EmailRepository {
 }
 
 // CreateRawEmail inserts the raw email.
-func (r *EmailRepository) CreateRawEmail(ctx context.Context, e *model.EmailRaw) (int, error) {
+func (r *EmailRepository) CreateRawEmail(ctx context.Context, e *db.Email) (int, error) {
 	query := `
         INSERT INTO emails_raw (user_id, subject, body, raw_json, status, created_at)
         VALUES ($1, $2, $3, $4, 'received', NOW())

@@ -2,7 +2,7 @@ package repository
 
 import (
 	"context"
-	"worker-service/internal/model"
+	"mygoproject/contracts/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,7 +17,7 @@ func NewEmailRepository(db *pgxpool.Pool) *EmailRepository {
 
 // FindRawWithMetadataByID returns raw email with metadata in a single query.
 // Returns the email and whether metadata exists.
-func (r *EmailRepository) FindRawWithMetadataByID(ctx context.Context, id int) (*model.EmailRaw, bool, error) {
+func (r *EmailRepository) FindRawWithMetadataByID(ctx context.Context, id int) (*db.Email, bool, error) {
 	query := `
         SELECT 
             r.id,
@@ -27,13 +27,13 @@ func (r *EmailRepository) FindRawWithMetadataByID(ctx context.Context, id int) (
             r.raw_json,
             r.status,
             r.created_at,
-            m.id as metadata_id
+            m.email_id
         FROM emails_raw r
         LEFT JOIN emails_metadata m ON r.id = m.email_id
         WHERE r.id = $1
     `
-	var e model.EmailRaw
-	var metadataID *int
+	var e db.Email
+	var metadataEmailID *int
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&e.ID,
 		&e.UserID,
@@ -42,12 +42,12 @@ func (r *EmailRepository) FindRawWithMetadataByID(ctx context.Context, id int) (
 		&e.RawJSON,
 		&e.Status,
 		&e.CreatedAt,
-		&metadataID,
+		&metadataEmailID,
 	)
 	if err != nil {
 		return nil, false, err
 	}
-	return &e, metadataID != nil, nil
+	return &e, metadataEmailID != nil, nil
 }
 
 // UpdateStatus sets raw email status (e.g. classified).
@@ -60,4 +60,3 @@ func (r *EmailRepository) UpdateStatus(ctx context.Context, id int, status strin
 	_, err := r.db.Exec(ctx, query, status, id)
 	return err
 }
-

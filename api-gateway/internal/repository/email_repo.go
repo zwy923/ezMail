@@ -2,7 +2,8 @@ package repository
 
 import (
 	"context"
-	"api-gateway/internal/model"
+
+	"mygoproject/contracts/db"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,8 +16,7 @@ func NewEmailRepository(db *pgxpool.Pool) *EmailRepository {
 	return &EmailRepository{db: db}
 }
 
-// ListEmailsWithMetadata returns all emails + metadata for a user.
-func (r *EmailRepository) ListEmailsWithMetadata(ctx context.Context, userID int) ([]model.EmailWithMetadata, error) {
+func (r *EmailRepository) ListEmailsWithMetadata(ctx context.Context, userID int) ([]db.EmailWithMetadata, error) {
 	query := `
         SELECT 
             r.id,
@@ -24,13 +24,17 @@ func (r *EmailRepository) ListEmailsWithMetadata(ctx context.Context, userID int
             r.body,
             r.status,
             r.created_at,
-            m.category,
-            m.confidence
+            
+            m.categories,
+            m.priority,
+            m.summary
+
         FROM emails_raw r
         LEFT JOIN emails_metadata m
-        ON r.id = m.email_id
+            ON r.id = m.email_id
+        
         WHERE r.user_id = $1
-        ORDER BY r.created_at DESC
+        ORDER BY r.created_at DESC;
     `
 
 	rows, err := r.db.Query(ctx, query, userID)
@@ -39,12 +43,12 @@ func (r *EmailRepository) ListEmailsWithMetadata(ctx context.Context, userID int
 	}
 	defer rows.Close()
 
-	emails := []model.EmailWithMetadata{}
+	var result []db.EmailWithMetadata
 
 	for rows.Next() {
-		var e model.EmailWithMetadata
-		var metadataCategory *string
-		var metadataConfidence *float64
+		var e db.EmailWithMetadata
+		var categories []string
+		var priority, summary *string // allow null
 
 		err := rows.Scan(
 			&e.ID,
@@ -52,23 +56,25 @@ func (r *EmailRepository) ListEmailsWithMetadata(ctx context.Context, userID int
 			&e.Body,
 			&e.Status,
 			&e.CreatedAt,
-			&metadataCategory,
-			&metadataConfidence,
+
+			&categories,
+			&priority,
+			&summary,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		if metadataCategory != nil && metadataConfidence != nil {
-			e.Metadata = &model.EmailMetadata{
-				Category:   *metadataCategory,
-				Confidence: *metadataConfidence,
-			}
+		e.Categories = categories
+		if priority != nil {
+			e.Priority = *priority
+		}
+		if summary != nil {
+			e.Summary = *summary
 		}
 
-		emails = append(emails, e)
+		result = append(result, e)
 	}
 
-	return emails, nil
+	return result, nil
 }
-

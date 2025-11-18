@@ -5,10 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"time"
+	"worker-service/internal/model"
 )
 
 type AgentClient struct {
@@ -25,66 +24,45 @@ func NewAgentClient(baseURL string) *AgentClient {
 	}
 }
 
-type ClassifyRequest struct {
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
+type EmailInput struct {
+    EmailID int    `json:"email_id"`
+    UserID  int    `json:"user_id"`
+    Subject string `json:"subject"`
+    Body    string `json:"body"`
 }
 
-type ClassifyResponse struct {
-	Category   string  `json:"category"`
-	Confidence float64 `json:"confidence"`
-}
 
-// ClassifyEmail calls the agent-service to classify an email
-func (c *AgentClient) ClassifyEmail(ctx context.Context, subject, body string) (*ClassifyResponse, error) {
-	reqBody := ClassifyRequest{
-		Subject: subject,
-		Body:    body,
-	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
+func (c *AgentClient) Decide(ctx context.Context, email EmailInput) (*model.AgentDecision, error) {
+    b, err := json.Marshal(email)
+    if err != nil {
+        return nil, err
+    }
 
-	url := c.baseURL + "/classify"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/decide", bytes.NewReader(b))
+    if err != nil {
+        return nil, err
+    }
+    req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		// 检查是否是超时错误（HTTP client timeout 或 context deadline）
-		errStr := err.Error()
-		if ctx.Err() == context.DeadlineExceeded || 
-		   strings.Contains(errStr, "timeout") || 
-		   strings.Contains(errStr, "deadline exceeded") ||
-		   strings.Contains(errStr, "context deadline exceeded") {
-			return nil, fmt.Errorf("agent service timeout: %w", err)
-		}
-		return nil, fmt.Errorf("failed to call agent service: %w", err)
-	}
-	defer resp.Body.Close()
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
 
-	// 处理非 200 状态码
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		// 500 错误视为可重试
-		if resp.StatusCode >= 500 {
-			return nil, fmt.Errorf("agent service returned 5xx error: %d - %s", resp.StatusCode, string(bodyBytes))
-		}
-		// 4xx 错误视为不可重试
-		return nil, fmt.Errorf("agent service returned error: %d - %s", resp.StatusCode, string(bodyBytes))
-	}
+    if resp.StatusCode >= 500 {
+        // 可重试错误
+        return nil, fmt.Errorf("agent service 5xx: %d", resp.StatusCode)
+    }
+    if resp.StatusCode != 200 {
+        // 不可重试或者单独处理
+        return nil, fmt.Errorf("agent service error: %d", resp.StatusCode)
+    }
 
-	var result ClassifyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &result, nil
+    var decision model.AgentDecision
+    if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {
+        return nil, err
+    }
+    return &decision, nil
 }
-
