@@ -1,75 +1,68 @@
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from .prompt import DECISION_PROMPT
+# app/agent/chain.py
+
 import json
+from openai import OpenAI
+from langchain.prompts import ChatPromptTemplate
+from app.agent.prompt import DECISION_PROMPT
+from app.agent.schema import AgentDecision
 import logging
 
 logger = logging.getLogger(__name__)
 
+client = OpenAI()
 
-def build_decision_chain():
-    logger.debug("开始构建决策链...")
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.1,
-    )
-    logger.debug(f"LLM 模型已初始化 - model: gpt-4o-mini, temperature: 0.1")
+prompt = ChatPromptTemplate.from_messages([
+    ("user", DECISION_PROMPT)
+])
 
-    prompt = ChatPromptTemplate.from_template(DECISION_PROMPT)
-    logger.debug("提示词模板已创建")
+FALLBACK_DECISION = {
+    "categories": ["UNKNOWN"],
+    "priority": "LOW",
+    "summary": "Unable to classify this email.",
+    "should_create_task": False,
+    "task": None,
+    "should_notify": False,
+    "notification_channel": None,
+    "notification_message": None
+}
 
-    async def ainvoke(payload: dict) -> dict:
-        logger.debug(f"开始处理决策请求 - email_id: {payload.get('email_id')}, user_id: {payload.get('user_id')}")
-        content = None
-        
+class DecisionChain:
+
+    async def ainvoke(self, payload: dict) -> AgentDecision:
+        logger.debug("开始处理决策请求 - email_id=%s user_id=%s",
+                     payload["email_id"], payload["user_id"])
+
+        safe_payload = {
+            "email_id": payload.get("email_id"),
+            "user_id": payload.get("user_id"),
+            "subject": payload.get("subject", ""),
+            "body": payload.get("body", ""),
+        }
+
+        logger.debug("正在格式化提示词消息...")
+        messages = prompt.format_messages(**safe_payload)
+        logger.debug("提示词格式化完成")
+
         try:
-            # 只提取 prompt 需要的字段，过滤其他字段
-            safe_payload = {
-                "email_id": payload["email_id"],
-                "user_id": payload["user_id"],
-                "subject": payload["subject"],
-                "body": payload["body"],
-            }
-            
-            # 格式化提示词
-            logger.debug("正在格式化提示词消息...")
-            messages = prompt.format_messages(**safe_payload)
-            logger.debug(f"提示词消息已格式化，消息数量: {len(messages)}")
-            
-            # 记录发送给 LLM 的提示词（仅记录部分内容以避免日志过长）
-            if messages:
-                first_msg = str(messages[0])[:200] if len(str(messages[0])) > 200 else str(messages[0])
-                logger.debug(f"提示词预览: {first_msg}...")
-            
-            # 调用 LLM
             logger.debug("正在调用 LLM...")
-            resp = await llm.ainvoke(messages)
-            logger.debug(f"LLM 响应已接收 - 响应长度: {len(resp.content)} 字符")
-            
-            # LLM 输出必须是 JSON 字符串
-            content = resp.content.strip()
-            logger.debug(f"LLM 原始响应内容: {content[:500]}..." if len(content) > 500 else f"LLM 原始响应内容: {content}")
-            
-            # 解析 JSON
-            logger.debug("正在解析 JSON 响应...")
-            result = json.loads(content)
-            logger.debug(f"JSON 解析成功 - 包含字段: {list(result.keys())}")
-            
-            return result
-        except json.JSONDecodeError as e:
-            error_msg = f"JSON 解析失败"
-            if content:
-                error_msg += f" - 原始内容: {content[:500]}"
-            logger.error(error_msg, exc_info=True)
-            raise
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.2,
+                messages=[m.to_dict() for m in messages]
+            )
+            raw_text = response.choices[0].message["content"]
+            logger.debug("LLM 原始返回: %s", raw_text)
         except Exception as e:
-            logger.error(f"决策链处理过程中发生错误: {str(e)}", exc_info=True)
-            raise
+            logger.error("LLM 调用失败: %s", str(e))
+            return AgentDecision(**FALLBACK_DECISION)
 
-    # 这里只返回一个"自定义 async 函数"也可以，不一定非要搞 LangChain Runnable
-    class DecisionChain:
-        async def ainvoke(self, payload):
-            return await ainvoke(payload)
+        # 尝试解析 JSON
+        try:
+            parsed = json.loads(raw_text)
+            decision = AgentDecision(**parsed)
+            logger.debug("JSON 校验成功")
+            return decision
 
-    logger.debug("决策链构建完成")
-    return DecisionChain()
+        except Exception as e:
+            logger.error("JSON 解析失败，将使用 fallback - 错误: %s", str(e))
+            return AgentDecision(**FALLBACK_DECISION)
