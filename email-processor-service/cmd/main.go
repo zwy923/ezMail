@@ -10,6 +10,7 @@ import (
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/outbox"
 	"mygoproject/pkg/redis"
 	"mygoproject/pkg/util"
@@ -25,6 +26,22 @@ func main() {
 	cfg := config.Load()
 	logger := logger.NewLogger()
 	defer logger.Sync()
+
+	// Init OpenTelemetry
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		otelEndpoint = "otel-collector:4317"
+	}
+	shutdown, err := otel.Init(otel.Config{
+		ServiceName:    "email-processor-service",
+		ServiceVersion: "1.0.0",
+		Endpoint:       otelEndpoint,
+		Enabled:        true,
+	}, logger)
+	if err != nil {
+		logger.Fatal("Failed to init OpenTelemetry", zap.Error(err))
+	}
+	defer shutdown()
 
 	logger.Info("Starting email-processor-service...")
 

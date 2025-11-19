@@ -104,6 +104,8 @@ MyGoProject/
 │
 ├── pkg/                      # 共享包
 │   ├── db/                   # 数据库连接
+│   │   ├── db.go             # 数据库连接池
+│   │   └── slow_query_hook.go # 慢查询监控 Tracer
 │   ├── mq/                   # MQ 连接（Publisher/Consumer）
 │   ├── logger/               # 日志工具
 │   ├── redis/                # Redis 客户端
@@ -115,7 +117,12 @@ MyGoProject/
 │   │   └── helper.go         # 辅助函数
 │   ├── circuitbreaker/       # 熔断器（Circuit Breaker）
 │   ├── rbac/                 # 基于角色的访问控制
-│   ├── trace/                # 分布式追踪（Trace ID）
+│   ├── trace/                # 分布式追踪（Trace ID，向后兼容）
+│   ├── otel/                 # OpenTelemetry 全链路追踪
+│   │   ├── otel.go           # OpenTelemetry 初始化
+│   │   ├── http.go           # HTTP 追踪中间件
+│   │   ├── mq.go             # MQ 追踪（Publisher/Consumer）
+│   │   └── db.go             # 数据库追踪
 │   ├── metrics/              # Prometheus 指标
 │   └── config/               # 统一配置中心
 │
@@ -1081,7 +1088,7 @@ MyGoProject/
 - **消息队列：** RabbitMQ (amqp091-go)
 - **日志：** zap
 - **JWT：** 自定义实现
-- **可观测性：** Prometheus 指标、分布式追踪（Trace ID）
+- **可观测性：** Prometheus 指标、OpenTelemetry 全链路追踪（Jaeger）
 - **可靠性：** Outbox 模式、熔断器（Circuit Breaker）
 - **安全：** RBAC（基于角色的访问控制）
 
@@ -1095,6 +1102,7 @@ MyGoProject/
 - **消息队列：** RabbitMQ
 - **缓存：** Redis（用于去重和重试计数）
 - **容器化：** Docker + Docker Compose
+- **可观测性：** OpenTelemetry Collector + Jaeger（分布式追踪）
 
 ---
 
@@ -1221,13 +1229,16 @@ users
 | postgres | 5432 | PostgreSQL 数据库 |
 | rabbitmq | 5672 | RabbitMQ 消息队列 |
 | redis | 6379 | Redis 缓存 |
+| otel-collector | 4317 | OpenTelemetry Collector (gRPC) |
+| otel-collector | 4318 | OpenTelemetry Collector (HTTP) |
+| jaeger | 16686 | Jaeger UI |
 
 ---
 
 ## 📝 总结
 
 这是一个基于微服务架构的智能任务管理系统，支持：
-- ✅ 邮件智能分类和任务创建
+- ✅ 邮件智能处理和任务创建
 - ✅ 文本转任务（一次性任务）
 - ✅ 习惯追踪（重复任务）
 - ✅ 项目规划（多级任务结构）
@@ -1237,8 +1248,9 @@ users
 - ✅ **Outbox 模式**：可靠的事件发布，保证事务一致性
 - ✅ **熔断器**：防止级联故障，agent-service 失败不影响其他服务
 - ✅ **RBAC**：基于角色的访问控制，防止越权操作
-- ✅ **分布式追踪**：全链路 trace_id 追踪
+- ✅ **OpenTelemetry 全链路追踪**：跨服务 Trace，支持 Jaeger 可视化
 - ✅ **Prometheus 指标**：完整的可观测性
+- ✅ **慢查询监控**：自动检测 >100ms 的 SQL 查询，记录警告日志和 Prometheus 指标
 
 所有服务通过 RabbitMQ 异步通信，使用 PostgreSQL 持久化数据，Redis 提供去重和重试计数功能。
 
@@ -1258,9 +1270,11 @@ users
    - user_id 匹配验证：防止越权操作
 
 4. **可观测性：**
-   - 全链路 trace_id：API → MQ → Service → DB
-   - Prometheus 指标：HTTP、MQ、Agent、DB 延迟统计
-   - 结构化日志：自动注入 trace_id
+   - OpenTelemetry 全链路追踪：API → Mail Ingestion → MQ → Email Processor → Task Service → DB
+   - Jaeger 可视化：支持跨服务 Trace，延迟可在 Jaeger UI 中查看
+   - Prometheus 指标：HTTP、MQ、Agent、DB 延迟统计、慢查询计数
+   - 慢查询监控：使用 pgx Tracer 自动检测 >100ms 的 SQL 查询，记录警告日志和 `db_slow_query_total` 指标
+   - 结构化日志：自动注入 trace_id（向后兼容）
 
 ### 核心功能模块
 
@@ -1308,9 +1322,54 @@ users
 - **pkg/outbox/：** Outbox 模式实现（Repository、Dispatcher、Replay）
 - **pkg/circuitbreaker/：** 熔断器实现
 - **pkg/rbac/：** RBAC 权限控制
-- **pkg/trace/：** 分布式追踪（Trace ID）
+- **pkg/trace/：** 分布式追踪（Trace ID，向后兼容）
+- **pkg/otel/：** OpenTelemetry 全链路追踪（HTTP、MQ、DB）
 - **pkg/metrics/：** Prometheus 指标
 - **pkg/config/：** 统一配置中心
 - **migrations/002_add_outbox.sql：** Outbox 表结构迁移
 - **api-gateway/internal/handler/admin_handler.go：** Replay API 处理器
+- **config/otel-collector-config.yaml：** OpenTelemetry Collector 配置
+- **docker-compose.yml：** 添加 otel-collector 和 Jaeger 服务
+
+### OpenTelemetry 全链路追踪
+
+**架构：**
+- 所有 Go 服务通过 OpenTelemetry SDK 发送 trace 数据到 otel-collector
+- otel-collector 接收 trace 数据并转发到 Jaeger
+- Jaeger 提供 UI 界面（http://localhost:16686）查看完整的调用链路
+
+**自动追踪：**
+- ✅ HTTP 请求：Gin 中间件自动创建 span
+- ✅ MQ 发布：Publisher 自动创建 Producer span
+- ✅ MQ 消费：Consumer 自动创建 Consumer span，支持跨服务传播
+- ✅ PostgreSQL 查询：支持数据库操作追踪（可选）
+
+**效果：**
+- 支持跨服务 Trace，将一次任务创建链路从 API → Mail Ingestion → MQ → Email Processor → Task Service → DB 全流程串起来
+- 延迟可在 Jaeger 中可视化，方便性能分析和问题排查
+- 所有服务使用统一的 trace context，支持 W3C Trace Context 标准
+
+### 慢查询监控
+
+**实现方式：**
+- 使用 pgx v5 的 `QueryTracer` 接口实现慢查询监控
+- 自动拦截所有数据库查询，检测执行时间超过 100ms 的查询
+
+**功能特性：**
+- ✅ 自动检测：所有通过 `pgxpool.Pool` 执行的查询都会被监控
+- ✅ 警告日志：超过阈值的查询会记录 `WARN slow-query` 日志，包含 SQL 和耗时
+- ✅ Prometheus 指标：记录 `db_slow_query_total` 计数器，标签包含 SQL 语句（截断到 200 字符）
+- ✅ 可配置阈值：默认 100ms，可通过 `NewSlowQueryTracer` 自定义
+
+**日志格式：**
+```
+WARN slow-query: SELECT * FROM tasks WHERE user_id = $1 took=189ms
+```
+
+**Prometheus 指标：**
+- `db_slow_query_total{sql="SELECT * FROM tasks..."}` - 慢查询总数
+
+**使用方式：**
+- 已在 `pkg/db/db.go` 中自动集成，所有使用 `db.NewConnection` 创建的连接池都会自动启用慢查询监控
+- 无需额外配置，开箱即用
 

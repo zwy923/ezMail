@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/trace"
 
 	"github.com/rabbitmq/amqp091-go"
+	otelstd "go.opentelemetry.io/otel"
 )
 
 type Publisher struct {
@@ -67,18 +69,28 @@ func (p *Publisher) Publish(routingKey string, payload any) error {
 
 // PublishWithContext publishes an event with trace_id from context.
 func (p *Publisher) PublishWithContext(ctx context.Context, routingKey string, payload any) error {
+	// 创建 OpenTelemetry span
+	ctx, span := otel.MQPublishSpan(ctx, routingKey, ExchangeName)
+	defer span.End()
+
 	body, err := json.Marshal(payload)
 	if err != nil {
+		span.RecordError(err)
 		return err
 	}
 
-	// 从 context 中提取 trace_id 并添加到消息头
+	// 从 context 中提取 trace context 并注入到消息头
 	headers := amqp091.Table{}
+	propagator := otelstd.GetTextMapPropagator()
+	carrier := otel.NewMQHeaderCarrier(headers)
+	propagator.Inject(ctx, carrier)
+
+	// 向后兼容：也设置 x-trace-id（如果存在）
 	if traceID := trace.FromContext(ctx); traceID != "" {
 		headers["x-trace-id"] = traceID
 	}
 
-	return p.channel.Publish(
+	err = p.channel.Publish(
 		ExchangeName,
 		routingKey,
 		false,
@@ -90,4 +102,9 @@ func (p *Publisher) PublishWithContext(ctx context.Context, routingKey string, p
 			Headers:      headers,
 		},
 	)
+
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }

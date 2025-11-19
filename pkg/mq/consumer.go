@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 	"mygoproject/pkg/metrics"
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/trace"
 )
 
@@ -197,8 +199,17 @@ func (c *Consumer) StartConsuming() error {
 				// 记录消费开始时间
 				consumeStart := time.Now()
 
-				// 从消息头中提取 trace_id 并添加到 context
+				// 从消息头中提取 OpenTelemetry trace context
 				ctx := context.Background()
+				propagator := otel.GetTextMapPropagator()
+				carrier := otel.NewMQHeaderCarrier(msg.Headers)
+				ctx = propagator.Extract(ctx, carrier)
+
+				// 创建 OpenTelemetry span
+				ctx, span := otel.MQConsumeSpan(ctx, c.routingKey, c.queue.Name)
+				defer span.End()
+
+				// 向后兼容：从消息头中提取 trace_id 并添加到 context（用于日志）
 				if traceIDHeader, ok := msg.Headers["x-trace-id"]; ok {
 					if traceID, ok := traceIDHeader.(string); ok && traceID != "" {
 						ctx = trace.WithContext(ctx, traceID)
@@ -254,6 +265,8 @@ func (c *Consumer) StartConsuming() error {
 
 			// 执行业务处理
 			if err := c.handler(ctx, msg.Body); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				c.logger.Error("Handler error",
 					zap.String("routing_key", c.routingKey),
 					zap.String("queue", c.queue.Name),
@@ -334,7 +347,9 @@ func (c *Consumer) StartConsuming() error {
 			}
 
 			// Handler 成功 → 确认消息
+			span.SetStatus(codes.Ok, "message processed successfully")
 			if err := msg.Ack(false); err != nil {
+				span.RecordError(err)
 				c.logger.Error("Failed to ack message",
 					zap.String("routing_key", c.routingKey),
 					zap.Error(err),

@@ -65,6 +65,15 @@ var (
 		},
 		[]string{"status"}, // status: success, failed
 	)
+
+	// 慢查询计数
+	SlowQueryTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "db_slow_query_total",
+			Help: "Total number of slow database queries (threshold: 100ms)",
+		},
+		[]string{"sql"}, // SQL 语句（截断到前 200 字符）
+	)
 )
 
 // RecordMQConsumeLatency 记录 MQ 消费延迟
@@ -95,5 +104,14 @@ func IncrementTaskGeneration(source string) {
 // IncrementEmailProcessed 增加邮件处理计数
 func IncrementEmailProcessed(status string) {
 	EmailProcessedCount.WithLabelValues(status).Inc()
+}
+
+// IncrementSlowQuery 增加慢查询计数
+func IncrementSlowQuery(sql string, duration time.Duration) {
+	// 截断 SQL 语句（避免标签值过长）
+	if len(sql) > 200 {
+		sql = sql[:200] + "..."
+	}
+	SlowQueryTotal.WithLabelValues(sql).Inc()
 }
 

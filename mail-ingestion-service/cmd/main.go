@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"mail-ingestion-service/internal/config"
 	"mail-ingestion-service/internal/handler"
@@ -12,6 +13,7 @@ import (
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/outbox"
 
 	"go.uber.org/zap"
@@ -23,6 +25,22 @@ func main() {
 
 	logger := logger.NewLogger()
 	defer logger.Sync()
+
+	// Init OpenTelemetry
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		otelEndpoint = "otel-collector:4317"
+	}
+	shutdown, err := otel.Init(otel.Config{
+		ServiceName:    "mail-ingestion-service",
+		ServiceVersion: "1.0.0",
+		Endpoint:       otelEndpoint,
+		Enabled:        true,
+	}, logger)
+	if err != nil {
+		logger.Fatal("Failed to init OpenTelemetry", zap.Error(err))
+	}
+	defer shutdown()
 
 	// Init DB
 	dbConn, err := db.NewConnection(cfg.DB, logger)

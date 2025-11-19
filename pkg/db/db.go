@@ -37,6 +37,10 @@ func NewConnection(cfg config.DBConfig, logger *zap.Logger) (*pgxpool.Pool, erro
 	poolCfg.MinConns = 2
 	poolCfg.MaxConnIdleTime = time.Minute
 
+	// 添加慢查询监控 Tracer
+	slowQueryTracer := NewSlowQueryTracer(logger, 100*time.Millisecond)
+	poolCfg.ConnConfig.Tracer = slowQueryTracer
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

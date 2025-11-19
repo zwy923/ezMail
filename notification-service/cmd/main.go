@@ -12,6 +12,7 @@ import (
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/outbox"
 	"notification-service/internal/config"
 	"notification-service/internal/httpserver"
@@ -27,6 +28,22 @@ func main() {
 
 	log := logger.NewLogger()
 	defer log.Sync()
+
+	// Init OpenTelemetry
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		otelEndpoint = "otel-collector:4317"
+	}
+	shutdown, err := otel.Init(otel.Config{
+		ServiceName:    "notification-service",
+		ServiceVersion: "1.0.0",
+		Endpoint:       otelEndpoint,
+		Enabled:        true,
+	}, log)
+	if err != nil {
+		log.Fatal("Failed to init OpenTelemetry", zap.Error(err))
+	}
+	defer shutdown()
 
 	log.Info("Starting notification-service...",
 		zap.String("db_host", cfg.DB.Host),
@@ -128,4 +145,3 @@ func main() {
 
 	log.Info("notification-service shutdown complete")
 }
-

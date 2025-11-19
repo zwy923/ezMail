@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mygoproject/pkg/metrics"
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/trace"
 
 	"mygoproject/pkg/rbac"
@@ -30,7 +31,10 @@ func NewRouter(
 ) *Router {
 	r := gin.Default()
 
-	// Trace ID 中间件：生成或提取 trace_id
+	// OpenTelemetry 追踪中间件（必须在最前面）
+	r.Use(otel.GinMiddleware())
+
+	// Trace ID 中间件：生成或提取 trace_id（向后兼容）
 	r.Use(func(c *gin.Context) {
 		// 从请求头中提取 trace_id，如果没有则生成新的
 		traceID := trace.FromHeader(c.GetHeader(trace.HeaderName()))

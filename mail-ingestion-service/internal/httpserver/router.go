@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"mygoproject/pkg/mq"
 	"mygoproject/pkg/metrics"
+	"mygoproject/pkg/otel"
 	"mygoproject/pkg/trace"
 )
 
@@ -20,7 +21,10 @@ type Router struct {
 func NewRouter(ingestHandler *handler.IngestHandler, db *pgxpool.Pool, publisher *mq.Publisher) *Router {
 	r := gin.Default()
 
-	// Trace ID 中间件：提取或生成 trace_id
+	// OpenTelemetry 追踪中间件（必须在最前面）
+	r.Use(otel.GinMiddleware())
+
+	// Trace ID 中间件：提取或生成 trace_id（向后兼容）
 	r.Use(func(c *gin.Context) {
 		traceID := trace.FromHeader(c.GetHeader(trace.HeaderName()))
 		if traceID == "" {

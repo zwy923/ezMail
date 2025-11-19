@@ -11,6 +11,7 @@ import (
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/otel"
 	"task-service/internal/config"
 	"task-service/internal/handler"
 	"task-service/internal/httpserver"
@@ -25,6 +26,22 @@ func main() {
 
 	log := logger.NewLogger()
 	defer log.Sync()
+
+	// Init OpenTelemetry
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		otelEndpoint = "otel-collector:4317"
+	}
+	shutdown, err := otel.Init(otel.Config{
+		ServiceName:    "task-service",
+		ServiceVersion: "1.0.0",
+		Endpoint:       otelEndpoint,
+		Enabled:        true,
+	}, log)
+	if err != nil {
+		log.Fatal("Failed to init OpenTelemetry", zap.Error(err))
+	}
+	defer shutdown()
 
 	log.Info("Starting task-service...",
 		zap.String("db_host", cfg.DB.Host),
