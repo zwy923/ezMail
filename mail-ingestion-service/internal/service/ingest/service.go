@@ -2,42 +2,50 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"mail-ingestion-service/internal/repository"
 	dbcontracts "mygoproject/contracts/db"
 	mqcontracts "mygoproject/contracts/mq"
-	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
+	"mygoproject/pkg/trace"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	emailRepo       *repository.EmailRepository
-	failedEventRepo *repository.FailedEventRepository
-	publisher       *mq.Publisher
-	logger          *zap.Logger
+	db         *pgxpool.Pool
+	emailRepo  *repository.EmailRepository
+	outboxRepo *outbox.Repository
+	logger     *zap.Logger
 }
 
 func NewService(
+	db *pgxpool.Pool,
 	emailRepo *repository.EmailRepository,
-	failedEventRepo *repository.FailedEventRepository,
-	publisher *mq.Publisher,
 	logger *zap.Logger,
 ) *Service {
 	return &Service{
-		emailRepo:       emailRepo,
-		failedEventRepo: failedEventRepo,
-		publisher:       publisher,
-		logger:          logger,
+		db:         db,
+		emailRepo:  emailRepo,
+		outboxRepo: outbox.NewRepository(db),
+		logger:     logger,
 	}
 }
 
-// 事务边界处理：如果 MQ 发布失败，记录到 failed_events 表并返回错误（让 api-gateway 重试）
+// CreateRawAndPublish 使用 Outbox 模式：在事务中写入 email 和 outbox 事件
 func (s *Service) CreateRawAndPublish(ctx context.Context, userID int, subject, body string) (int, error) {
+	// 开始事务
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
 
-	// 1. Insert raw email
+	// 1. Insert raw email（在事务中）
 	raw := &dbcontracts.Email{
 		UserID:    userID,
 		Subject:   subject,
@@ -47,57 +55,60 @@ func (s *Service) CreateRawAndPublish(ctx context.Context, userID int, subject, 
 		CreatedAt: time.Now(),
 	}
 
-	emailID, err := s.emailRepo.CreateRawEmail(ctx, raw)
+	emailID, err := s.emailRepo.CreateRawEmailTx(ctx, tx, raw)
 	if err != nil {
 		s.logger.Error("Failed to create raw email", zap.Error(err))
 		return 0, fmt.Errorf("failed to create email: %w", err)
 	}
 
 	// 2. Construct event payload
+	traceID := trace.FromContext(ctx)
 	payload := mqcontracts.EmailReceivedPayload{
 		EmailID:    emailID,
 		UserID:     userID,
 		Subject:    subject,
 		Body:       body,
 		ReceivedAt: time.Now(),
+		TraceID:    traceID,
 	}
 
-	// 3 routing keys
+	// 3. 将事件写入 outbox（在同一个事务中）
 	routingKeys := []string{
 		"email.received.agent",
 		"email.received.log",
 		"email.received.notify",
 	}
 
-	// 3. Publish to all routing keys
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	emailID64 := int64(emailID)
 	for _, rk := range routingKeys {
-		if err := s.publisher.Publish(rk, payload); err != nil {
-			// log + write failed_events
-			s.logger.Error("Failed to publish MQ event",
+		event := &outbox.Event{
+			AggregateType: "email",
+			AggregateID:   &emailID64,
+			RoutingKey:    rk,
+			Payload:       payloadJSON,
+			Status:        "pending",
+		}
+
+		if err := s.outboxRepo.InsertEvent(ctx, tx, event); err != nil {
+			s.logger.Error("Failed to insert outbox event",
 				zap.String("routing_key", rk),
-				zap.Int("email_id", emailID),
 				zap.Error(err),
 			)
-
-			// record failed event for retry
-			if recordErr := s.failedEventRepo.InsertFailedEvent(
-				ctx,
-				emailID,
-				userID,
-				"email.received", // event type
-				rk,
-				payload,
-				err.Error(),
-			); recordErr != nil {
-				s.logger.Error("Failed to record failed event", zap.Error(recordErr))
-			}
-
-			// return error → make gateway retry (5xx)
-			return emailID, fmt.Errorf("failed to publish event to %s: %w", rk, err)
+			return 0, fmt.Errorf("failed to insert outbox event: %w", err)
 		}
 	}
 
-	s.logger.Info("Email created and all events published successfully",
+	// 4. 提交事务（email 和 outbox 事件一起提交）
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	s.logger.Info("Email created and outbox events inserted successfully",
 		zap.Int("email_id", emailID),
 		zap.Int("user_id", userID),
 		zap.Any("routing_keys", routingKeys),

@@ -12,6 +12,7 @@ import (
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
 	"notification-service/internal/config"
 	"notification-service/internal/httpserver"
 	"notification-service/internal/mqhandler"
@@ -53,7 +54,12 @@ func main() {
 	notificationRepo := repository.NewNotificationRepository(dbConn, log)
 
 	// Services
-	notificationSender := service.NewNotificationSender(notificationRepo, publisher, log)
+	notificationSender := service.NewNotificationSender(dbConn, notificationRepo, publisher, log)
+
+	// Init Outbox Dispatcher
+	outboxRepo := outbox.NewRepository(dbConn)
+	dispatcher := outbox.NewDispatcher(outboxRepo, publisher, log)
+	go dispatcher.Start(context.Background())
 
 	// MQ Handlers
 	notificationCreatedHandler := mqhandler.NewNotificationCreatedHandler(notificationRepo, notificationSender, log)

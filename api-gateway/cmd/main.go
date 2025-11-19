@@ -8,9 +8,11 @@ import (
 	"api-gateway/internal/httpserver"
 	"api-gateway/internal/repository"
 	"api-gateway/internal/service/auth"
+	"context"
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
 
 	"go.uber.org/zap"
 )
@@ -43,11 +45,20 @@ func main() {
 	// Init Services
 	authService := auth.NewService(userRepo, cfg.JWT.Secret)
 
+	// Init Outbox
+	outboxRepo := outbox.NewRepository(dbConn)
+	replayService := outbox.NewReplayService(outboxRepo, taskPublisher)
+
 	// Init Handlers
 	authHandler := handler.NewAuthHandler(authService)
 	mailProxyHandler := handler.NewMailProxyHandler(cfg.MailIngestionServiceURL)
 	emailQueryHandler := handler.NewEmailQueryHandler(emailRepo)
-	taskController := handler.NewTaskController(cfg.AgentServiceURL, cfg.TaskServiceURL, taskPublisher, logger)
+	taskController := handler.NewTaskController(dbConn, cfg.AgentServiceURL, cfg.TaskServiceURL, taskPublisher, logger)
+	adminHandler := handler.NewAdminHandler(replayService, logger)
+
+	// Init Outbox Dispatcher
+	dispatcher := outbox.NewDispatcher(outboxRepo, taskPublisher, logger)
+	go dispatcher.Start(context.Background())
 
 	// Router
 	router := httpserver.NewRouter(
@@ -55,6 +66,7 @@ func main() {
 		mailProxyHandler,
 		emailQueryHandler,
 		taskController,
+		adminHandler,
 		cfg.JWT.Secret,
 		dbConn,
 	)

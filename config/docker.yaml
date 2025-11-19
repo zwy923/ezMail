@@ -1,0 +1,34 @@
+# Docker 环境配置
+# 用于在 Docker Compose 中运行的服务
+# 使用 Docker 服务名称作为地址
+
+db:
+  host: postgres
+  port: 5432
+  user: postgres
+  password: ${DB_PASSWORD}
+  name: mygoproject
+
+mq:
+  url: amqp://guest:guest@rabbitmq:5672/
+
+redis:
+  addr: redis:6379
+  password: ${REDIS_PASSWORD}
+  db: 0
+
+jwt:
+  secret: ${JWT_SECRET}
+
+server:
+  port: ":8080"
+
+# 服务 URL（使用 Docker 服务名称）
+services:
+  mail_ingestion: http://mail-ingestion-service:8081
+  task: http://task-service:8082
+  agent: http://agent-service:8000
+  notification: http://notification-service:8085
+  email_processor: http://email-processor-service:8083
+  task_runner: http://task-runner-service:8084
+

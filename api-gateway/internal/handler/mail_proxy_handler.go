@@ -47,6 +47,10 @@ func (h *MailProxyHandler) SimulateNewEmail(c *gin.Context) {
 	// Copy headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", fmt.Sprintf("%d", userID.(int)))
+	// 传播 trace_id
+	if traceID := c.GetHeader("X-Trace-ID"); traceID != "" {
+		req.Header.Set("X-Trace-ID", traceID)
+	}
 
 	// Forward request
 	resp, err := h.httpClient.Do(req)

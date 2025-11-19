@@ -3,6 +3,7 @@ package mqhandler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	mqcontracts "mygoproject/contracts/mq"
 	"task-service/internal/model"
@@ -34,7 +35,18 @@ func (h *HabitCreatedHandler) Handle(ctx context.Context, raw json.RawMessage) e
 		zap.Int("user_id", p.UserID),
 		zap.String("title", p.Title),
 		zap.String("recurrence_pattern", p.RecurrencePattern),
+		zap.String("trace_id", p.TraceID),
 	)
+
+	// RBAC 验证：记录 user_id（MQ 事件来自内部服务，但记录用于审计）
+	// 注意：MQ 事件中的 user_id 应该已经在 api-gateway 中验证过
+	// 这里主要是记录和审计，防止潜在的伪造事件
+	if p.UserID <= 0 {
+		h.logger.Error("Invalid user_id in habit.created event",
+			zap.Int("user_id", p.UserID),
+		)
+		return fmt.Errorf("invalid user_id: %d", p.UserID)
+	}
 
 	habit := &model.Habit{
 		UserID:            p.UserID,

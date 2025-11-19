@@ -1,8 +1,18 @@
 -- ==========================================================
--- 001_init_schema.sql
--- Initial database schema for MyGoProject
--- Includes: users, emails, metadata, tasks, notifications,
---           notification logs, failed events
+-- init_all.sql
+-- Complete database schema for MyGoProject
+-- Includes all migrations: initial schema + outbox pattern
+-- ==========================================================
+-- 
+-- Usage:
+--   psql -U postgres -d mygoproject < migrations/init_all.sql
+--
+-- Note: Each service should run this migration in its own database
+--       to create the outbox_events table
+-- ==========================================================
+
+-- ==========================================================
+-- Migration 001: Initial Schema
 -- ==========================================================
 
 -- ==============================
@@ -144,11 +154,8 @@ CREATE TABLE IF NOT EXISTS failed_events (
 );
 
 -- ==============================
--- Indexes
+-- Indexes for Initial Schema
 -- ==============================
-
--- Users indexes (if needed in future)
--- Currently no indexes needed for users table
 
 -- Emails indexes
 CREATE INDEX IF NOT EXISTS idx_emails_raw_user ON emails_raw(user_id);
@@ -202,3 +209,45 @@ CREATE INDEX IF NOT EXISTS idx_failed_events_status ON failed_events(status);
 CREATE INDEX IF NOT EXISTS idx_failed_events_email ON failed_events(email_id);
 CREATE INDEX IF NOT EXISTS idx_failed_events_pending_retry
     ON failed_events(status, retry_count) WHERE status = 'pending';
+
+-- ==========================================================
+-- Migration 002: Outbox Pattern
+-- ==========================================================
+
+-- Outbox Events Table (每个服务都有自己的 outbox_events 表)
+-- 注意：每个服务在各自的数据库中创建此表
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id BIGSERIAL PRIMARY KEY,
+    aggregate_type VARCHAR(50),        -- email/task/habit/project/notification
+    aggregate_id BIGINT,               -- 关联对象ID, optional
+    routing_key VARCHAR(100) NOT NULL, -- MQ 路由键
+    payload JSONB NOT NULL,            -- 最终要发布的事件
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending/sent/failed
+    retry_count INT NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMP,           -- 失败后的重试时间
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- 索引：用于快速查询待发送的事件
+CREATE INDEX IF NOT EXISTS idx_outbox_pending 
+ON outbox_events (status, next_retry_at) 
+WHERE status = 'pending';
+
+-- 索引：用于按聚合类型和ID查询
+CREATE INDEX IF NOT EXISTS idx_outbox_aggregate 
+ON outbox_events (aggregate_type, aggregate_id);
+
+-- 索引：用于查询失败的事件（用于重放）
+CREATE INDEX IF NOT EXISTS idx_outbox_failed 
+ON outbox_events (status) 
+WHERE status = 'failed';
+
+-- ==========================================================
+-- Migration Complete
+-- ==========================================================
+-- 
+-- All tables and indexes have been created.
+-- Each service should run this migration in its own database.
+-- ==========================================================
+

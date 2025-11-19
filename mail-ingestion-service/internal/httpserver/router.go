@@ -2,12 +2,15 @@ package httpserver
 
 import (
 	"context"
+	"fmt"
 	"mail-ingestion-service/internal/handler"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/metrics"
+	"mygoproject/pkg/trace"
 )
 
 type Router struct {
@@ -16,6 +19,29 @@ type Router struct {
 
 func NewRouter(ingestHandler *handler.IngestHandler, db *pgxpool.Pool, publisher *mq.Publisher) *Router {
 	r := gin.Default()
+
+	// Trace ID 中间件：提取或生成 trace_id
+	r.Use(func(c *gin.Context) {
+		traceID := trace.FromHeader(c.GetHeader(trace.HeaderName()))
+		if traceID == "" {
+			traceID = trace.GenerateTraceID()
+		}
+		ctx := trace.WithContext(c.Request.Context(), traceID)
+		c.Request = c.Request.WithContext(ctx)
+		c.Header(trace.HeaderName(), traceID)
+		c.Next()
+	})
+
+	// HTTP 请求指标中间件
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		method := c.Request.Method
+		c.Next()
+		latency := time.Since(start)
+		status := c.Writer.Status()
+		metrics.RecordHTTPRequestDuration(method, path, fmt.Sprintf("%d", status), latency)
+	})
 
 	// Health endpoints (放在最前面)
 	r.GET("/healthz", func(c *gin.Context) {

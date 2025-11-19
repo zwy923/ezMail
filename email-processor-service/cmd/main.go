@@ -6,9 +6,11 @@ import (
 	"syscall"
 	"time"
 
+	"context"
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
 	"mygoproject/pkg/redis"
 	"mygoproject/pkg/util"
 	"email-processor-service/internal/config"
@@ -59,6 +61,7 @@ func main() {
 
 	// handlers
 	agentHandler := mqhandler.NewAgentDecisionHandler(
+		dbConn,
 		emailRepo,
 		metadataRepo,
 		agentClient,
@@ -67,6 +70,11 @@ func main() {
 		taskPublisher,
 		logger,
 	)
+
+	// Init Outbox Dispatcher
+	outboxRepo := outbox.NewRepository(dbConn)
+	dispatcher := outbox.NewDispatcher(outboxRepo, taskPublisher, logger)
+	go dispatcher.Start(context.Background())
 
 	notiLogHandler := mqhandler.NewEmailReceivedNotificationLogHandler(notiLogRepo, logger)
 	// NotificationHandler now publishes notification.created events (handled by notification-service)

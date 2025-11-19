@@ -20,6 +20,9 @@ RUN go mod download
 COPY pkg ./pkg
 COPY contracts ./contracts
 
+# Copy unified config directory
+COPY config ./config
+
 # Copy service code
 COPY notification-service ./notification-service
 
@@ -35,7 +38,7 @@ RUN apk --no-cache add ca-certificates wget
 WORKDIR /root/
 
 COPY --from=builder /build/notification-service/notification-service .
-COPY --from=builder /build/notification-service/config.yaml .
+COPY --from=builder /build/config ./config
 
 EXPOSE 8085
 

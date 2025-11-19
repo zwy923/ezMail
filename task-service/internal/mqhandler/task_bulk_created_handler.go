@@ -3,6 +3,7 @@ package mqhandler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	mqcontracts "mygoproject/contracts/mq"
@@ -34,7 +35,16 @@ func (h *TaskBulkCreatedHandler) Handle(ctx context.Context, raw json.RawMessage
 	h.logger.Info("Handling task.bulk_created event",
 		zap.Int("user_id", p.UserID),
 		zap.Int("task_count", len(p.Tasks)),
+		zap.String("trace_id", p.TraceID),
 	)
+
+	// RBAC 验证：验证 user_id 有效性（MQ 事件来自内部服务，但记录用于审计）
+	if p.UserID <= 0 {
+		h.logger.Error("Invalid user_id in task.bulk_created event",
+			zap.Int("user_id", p.UserID),
+		)
+		return fmt.Errorf("invalid user_id: %d", p.UserID)
+	}
 
 	if len(p.Tasks) == 0 {
 		h.logger.Warn("Empty task list in bulk_created event",

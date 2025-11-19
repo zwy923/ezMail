@@ -2,7 +2,6 @@ package config
 
 import (
 	"log"
-	"os"
 
 	"mygoproject/pkg/config"
 
@@ -15,18 +14,26 @@ type Config struct {
 }
 
 func Load() *Config {
-	f, err := os.Open("config.yaml")
+	// 使用统一配置中心
+	env := config.GetConfigEnv()
+	configDir := config.GetEnv("CONFIG_DIR", "config")
+
+	cfgMap, err := config.LoadConfig(env, configDir)
 	if err != nil {
-		log.Fatalf("failed to open config.yaml: %v", err)
+		log.Fatalf("failed to load config: %v", err)
 	}
-	defer f.Close()
 
+	// 转换为 Config 结构
 	var cfg Config
-	decoder := yaml.NewDecoder(f)
-	if err := decoder.Decode(&cfg); err != nil {
-		log.Fatalf("failed to decode config.yaml: %v", err)
+	cfgData, err := yaml.Marshal(cfgMap)
+	if err != nil {
+		log.Fatalf("failed to marshal config: %v", err)
+	}
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		log.Fatalf("failed to unmarshal config: %v", err)
 	}
 
+	// 环境变量覆盖（优先级最高）
 	config.OverrideDBFromEnv(&cfg.DB)
 	config.OverrideMQFromEnv(&cfg.MQ)
 

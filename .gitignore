@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+config/secrets.env
 
 # Go 编译产物
 *.exe
@@ -75,8 +76,10 @@ temp/
 *.sqlite3
 
 # 配置文件（如果包含敏感信息，但保留示例文件）
-# config.yaml 应该提交，但如果有本地配置可以忽略
 config.local.yaml
+# 旧的配置文件（已迁移到统一配置中心）
+**/config.yaml
+!apisix/config.yaml
 
 # Docker 相关
 .dockerignore

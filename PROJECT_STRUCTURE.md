@@ -107,10 +107,21 @@ MyGoProject/
 │   ├── mq/                   # MQ 连接（Publisher/Consumer）
 │   ├── logger/               # 日志工具
 │   ├── redis/                # Redis 客户端
-│   └── util/                 # 工具函数（JWT, 密码, 去重, 重试计数）
+│   ├── util/                 # 工具函数（JWT, 密码, 去重, 重试计数）
+│   ├── outbox/               # Outbox 模式（可靠事件发布）
+│   │   ├── outbox.go         # Repository 层
+│   │   ├── dispatcher.go     # 后台 Dispatcher
+│   │   ├── replay.go         # Replay 服务
+│   │   └── helper.go         # 辅助函数
+│   ├── circuitbreaker/       # 熔断器（Circuit Breaker）
+│   ├── rbac/                 # 基于角色的访问控制
+│   ├── trace/                # 分布式追踪（Trace ID）
+│   ├── metrics/              # Prometheus 指标
+│   └── config/               # 统一配置中心
 │
 └── migrations/               # 数据库迁移
-    └── 001_init_schema.sql
+    ├── 001_init_schema.sql
+    └── 002_add_outbox.sql    # Outbox 表结构
 ```
 
 ---
@@ -306,27 +317,72 @@ MyGoProject/
 - `idx_failed_events_email` (email_id)
 - `idx_failed_events_pending_retry` (status, retry_count) WHERE status = 'pending'
 
+### 12. outbox_events（Outbox 事件表）
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | BIGSERIAL PRIMARY KEY | 事件ID |
+| aggregate_type | VARCHAR(50) | 聚合类型：email/task/habit/project/notification |
+| aggregate_id | BIGINT | 关联对象ID（可选） |
+| routing_key | VARCHAR(100) | MQ 路由键 |
+| payload | JSONB | 事件负载（JSON） |
+| status | VARCHAR(20) | 状态：'pending' / 'sent' / 'failed'（默认 'pending'） |
+| retry_count | INT | 重试次数（默认 0） |
+| next_retry_at | TIMESTAMP | 下次重试时间（失败后） |
+| created_at | TIMESTAMP | 创建时间 |
+| updated_at | TIMESTAMP | 更新时间 |
+
+**索引：**
+- `idx_outbox_pending` (status, next_retry_at) WHERE status = 'pending'
+- `idx_outbox_aggregate` (aggregate_type, aggregate_id)
+- `idx_outbox_failed` (status) WHERE status = 'failed'
+
+**说明：**
+- 每个服务都有自己的 `outbox_events` 表（服务自治）
+- 使用 Outbox 模式确保事件发布的可靠性和事务一致性
+- Dispatcher 后台自动发送待处理事件
+
 ---
 
 ## 🔄 MQ 事件交互逻辑
 
+### Outbox 模式（可靠事件发布）
+
+**使用 Outbox 的服务：**
+- ✅ **mail-ingestion-service** - `email.received.*` 事件（3个路由键：agent, log, notify）
+- ✅ **email-processor-service** - `task.created`、`notification.created` 事件（最重要，在事务中同时写入 metadata 和 outbox）
+- ⚠️ **api-gateway** - `project.created` 事件（已使用 Outbox），但 `habit.created` 和 `task.bulk_created` **仍使用直接发布**
+- ✅ **task-runner-service** - `task.overdue`、`task.unlocked`、`habit.task.generated` 事件（只写入 outbox，不更新业务数据）
+- ✅ **notification-service** - `notification.sent`、`notification.failed` 事件（在发送后写入 outbox）
+
+**Outbox 工作流程：**
+1. **事务写入：** 业务数据和事件在同一事务中写入 `outbox_events` 表
+2. **后台发送：** Outbox Dispatcher 每秒扫描待处理事件并自动发送到 MQ
+3. **自动重试：** 发送失败时自动重试（最多 5 次，指数退避）
+4. **手动重放：** 通过 Replay API 手动重放失败事件
+
+**优势：**
+- ✅ 事务一致性：业务数据和事件保证一致
+- ✅ 可靠性：MQ 发布失败不影响业务数据
+- ✅ 可追溯：所有事件都有 trace_id
+- ✅ 可恢复：失败事件可以手动重放
+
 ### MQ 路由键和队列总览
 
-| 路由键 | 队列名 | 发布者 | 消费者 | 说明 |
-|--------|--------|--------|--------|------|
-| `email.received.agent` | `email.received.agent.q` | mail-ingestion-service | email-processor-service | AI 决策处理 |
-| `email.received.log` | `email.received.log.q` | mail-ingestion-service | email-processor-service | 通知日志记录 |
-| `email.received.notify` | `email.received.notify.q` | mail-ingestion-service | email-processor-service | 通知创建 |
-| `task.created` | `task.created.q` | email-processor-service | task-service | 单个任务创建（来自邮件） |
-| `task.bulk_created` | `task.bulk_created.q` | api-gateway | task-service | 批量任务创建（来自文本） |
-| `habit.created` | `habit.created.q` | api-gateway | task-service | 习惯创建 |
-| `project.created` | `project.created.q` | api-gateway | task-service | 项目创建 |
-| `task.overdue` | `task.overdue.q` | task-runner-service | task-service | 任务逾期 |
-| `task.unlocked` | `task.unlocked.q` | task-runner-service | task-service | 任务解锁（依赖完成） |
-| `habit.task.generated` | `habit.task.generated.q` | task-runner-service | task-service | 习惯任务生成 |
-| `notification.created` | `notification.created.q` | email-processor-service | notification-service | 通知创建 |
-| `notification.sent` | `notification.sent.q` | notification-service | - | 通知发送成功 |
-| `notification.failed` | `notification.failed.q` | notification-service | - | 通知发送失败 |
+| 路由键 | 队列名 | 发布者 | 消费者 | Outbox | 说明 |
+|--------|--------|--------|--------|--------|------|
+| `email.received.agent` | `email.received.agent.q` | mail-ingestion-service | email-processor-service | ✅ | AI 决策处理 |
+| `email.received.log` | `email.received.log.q` | mail-ingestion-service | email-processor-service | ✅ | 通知日志记录 |
+| `email.received.notify` | `email.received.notify.q` | mail-ingestion-service | email-processor-service | ✅ | 通知创建 |
+| `task.created` | `task.created.q` | email-processor-service | task-service | ✅ | 单个任务创建（来自邮件） |
+| `task.bulk_created` | `task.bulk_created.q` | api-gateway | task-service | ⚠️ | 批量任务创建（**直接发布，未使用 Outbox**） |
+| `habit.created` | `habit.created.q` | api-gateway | task-service | ⚠️ | 习惯创建（**直接发布，未使用 Outbox**） |
+| `project.created` | `project.created.q` | api-gateway | task-service | ✅ | 项目创建（已使用 Outbox） |
+| `task.overdue` | `task.overdue.q` | task-runner-service | task-service | ✅ | 任务逾期 |
+| `task.unlocked` | `task.unlocked.q` | task-runner-service | task-service | ✅ | 任务解锁（依赖完成） |
+| `habit.task.generated` | `habit.task.generated.q` | task-runner-service | task-service | ✅ | 习惯任务生成 |
+| `notification.created` | `notification.created.q` | email-processor-service | notification-service | ✅ | 通知创建 |
+| `notification.sent` | `notification.sent.q` | notification-service | - | ✅ | 通知发送成功 |
+| `notification.failed` | `notification.failed.q` | notification-service | - | ✅ | 通知发送失败 |
 
 **死信队列（DLQ）：**
 - 每个路由键都有对应的 DLQ：`{routing_key}.dlq`
@@ -382,11 +438,15 @@ MyGoProject/
 
 #### 1. email.received（邮件接收事件）
 
-**发布者：** `mail-ingestion-service`  
+**发布者：** `mail-ingestion-service`（使用 Outbox 模式）  
 **路由键：**
 - `email.received.agent` - AI 决策处理
 - `email.received.log` - 日志记录
 - `email.received.notify` - 通知处理
+
+**发布方式：**
+- 在事务中同时写入 `emails_raw` 和 `outbox_events` 表
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `EmailReceivedPayload`
 ```go
@@ -405,12 +465,24 @@ MyGoProject/
 - `email-processor-service` (email.received.notify.q) → `NotificationHandler`
 
 **处理流程：**
-1. **Agent Handler：**
-   - 调用 `agent-service` 进行 AI 决策
-   - 保存邮件元数据到 `emails_metadata`
-   - 如果 `should_create_task`，发布 `task.created` 事件
-   - 如果 `should_notify`，发布 `notification.created` 事件
-   - 更新邮件状态为 'classified'
+1. **Agent Handler（email-processor-service/internal/mqhandler/agent_handler.go）：**
+   - **Step 1:** 解码 payload，提取 trace_id 并注入 context
+   - **Step 2:** 加载邮件，检查幂等性（如果已 classified 则跳过）
+   - **Step 3:** Redis 去重（避免并发重复消费）
+   - **Step 4:** 调用 `agent-service /decide`（带熔断器和 fallback）
+     - 熔断器配置：失败阈值 3，超时 30 秒
+     - Fallback：返回默认决策（不创建任务、不发送通知），确保 ingestion-service 继续运行
+     - 记录 `agent_call_latency_ms` 指标
+   - **Step 5-8:** 在**单个事务**中执行：
+     - 写入 `emails_metadata`（InsertDecisionTx）
+     - 如果 `should_create_task`，写入 `outbox_events` (task.created)
+     - 如果 `should_notify`，写入 `outbox_events` (notification.created)
+     - 更新 `emails_raw.status = 'classified'`（UpdateStatusTx）
+   - **Step 9:** 记录 metrics（IncrementEmailProcessed, IncrementTaskGeneration）
+   - **错误处理：**
+     - 可重试错误：返回错误（nack，触发重试）
+     - 不可重试错误：写入 unknown + classified，返回 nil（ack）
+     - 超过最大重试次数（5次）：写入 unknown + classified，返回 nil（ack）
 
 2. **Log Handler：**
    - 记录通知日志到 `notifications_log`
@@ -422,9 +494,13 @@ MyGoProject/
 
 #### 2. task.created（单个任务创建事件）
 
-**发布者：** `email-processor-service` (AgentDecisionHandler)  
+**发布者：** `email-processor-service` (AgentDecisionHandler，使用 Outbox 模式)  
 **路由键：** `task.created`  
 **队列：** `task.created.q`
+
+**发布方式：**
+- 在事务中同时写入 `emails_metadata`、`outbox_events` 和更新 `emails_raw.status`
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `TaskCreatedPayload`
 ```go
@@ -438,19 +514,26 @@ MyGoProject/
 
 **消费者：** `task-service` → `TaskCreatedHandler`
 
-**处理流程：**
+**处理流程（task-service/internal/mqhandler/task_created_handler.go）：**
 - 验证 `email_id > 0`（task.created 事件必须来自邮件）
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
 - 插入任务到 `tasks` 表
 - 关联 `email_id` 和 `user_id`
 - 计算 `due_date = now + due_in_days`
+- 幂等性保证：唯一索引 `idx_tasks_unique_pending_email_user` 确保同一 email_id + user_id 只能有一个 pending 任务
 
 ---
 
 #### 3. task.bulk_created（批量任务创建事件）
 
-**发布者：** `api-gateway` (TaskController.CreateTasksFromText)  
+**发布者：** `api-gateway` (TaskController.CreateTasksFromText，使用 Outbox 模式)  
 **路由键：** `task.bulk_created`  
 **队列：** `task.bulk_created.q`
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表（不写业务数据）
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `TaskBulkCreatedPayload`
 ```go
@@ -467,7 +550,9 @@ MyGoProject/
 
 **消费者：** `task-service` → `TaskBulkCreatedHandler`
 
-**处理流程：**
+**处理流程（task-service/internal/mqhandler/task_bulk_created_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
 - 使用事务批量插入任务
 - `email_id` 为 0 时插入 NULL（文本转任务没有关联邮件，避免外键冲突）
 - `Insert` 和 `BulkInsert` 方法自动处理：当 `email_id <= 0` 时插入 NULL
@@ -476,9 +561,13 @@ MyGoProject/
 
 #### 4. habit.created（习惯创建事件）
 
-**发布者：** `api-gateway` (TaskController.CreateTasksFromText)  
+**发布者：** `api-gateway` (TaskController.CreateTasksFromText，使用 Outbox 模式)  
 **路由键：** `habit.created`  
 **队列：** `habit.created.q`
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表（不写业务数据）
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `HabitCreatedPayload`
 ```go
@@ -491,9 +580,12 @@ MyGoProject/
 
 **消费者：** `task-service` → `HabitCreatedHandler`
 
-**处理流程：**
+**处理流程（task-service/internal/mqhandler/habit_created_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
 - 插入习惯到 `habits` 表
 - `is_active = TRUE`
+- 幂等性：如果习惯已存在（相同 user_id + title），跳过或更新
 
 **后续处理：**
 - `task-runner-service` 的 `Orchestrator` 每天凌晨 00:00 自动生成当天的习惯任务
@@ -505,9 +597,13 @@ MyGoProject/
 
 #### 5. project.created（项目创建事件）
 
-**发布者：** `api-gateway` (TaskController.PlanProject)  
+**发布者：** `api-gateway` (TaskController.PlanProject，使用 Outbox 模式)  
 **路由键：** `project.created`  
 **队列：** `project.created.q`
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表（不写业务数据）
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `ProjectCreatedPayload`
 ```go
@@ -536,20 +632,33 @@ MyGoProject/
 
 **消费者：** `task-service` → `ProjectCreatedHandler`
 
-**处理流程：**
-1. 创建项目到 `projects` 表
-2. 为每个 milestone 创建阶段到 `milestones` 表
-3. 为每个任务创建任务到 `tasks` 表（关联 `project_id` 和 `milestone_id`）
-   - `email_id` 为 NULL（项目任务不关联邮件，`InsertFromProject` 方法不包含 `email_id` 字段）
-4. 解析任务依赖关系，创建 `task_dependencies` 记录
+**处理流程（task-service/internal/mqhandler/project_created_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
+- 使用事务执行：
+  1. 创建项目到 `projects` 表
+  2. 为每个 milestone 创建阶段到 `milestones` 表
+  3. 为每个任务创建任务到 `tasks` 表（关联 `project_id` 和 `milestone_id`）
+     - `email_id` 为 NULL（项目任务不关联邮件，`InsertFromProject` 方法不包含 `email_id` 字段）
+  4. 解析任务依赖关系，创建 `task_dependencies` 记录
+     - 依赖关系基于任务标题（`depends_on` 字段）
+     - 在同一 milestone 内查找依赖任务
 
 ---
 
 #### 6. task.overdue（任务逾期事件）
 
-**发布者：** `task-runner-service` (Orchestrator.CheckAndMarkOverdue)  
+**发布者：** `task-runner-service` (Orchestrator.CheckAndMarkOverdue，使用 Outbox 模式)  
 **路由键：** `task.overdue`  
 **队列：** `task.overdue.q`
+
+**发布方式（task-runner-service/internal/service/orchestrator.go）：**
+- **已使用 Outbox 模式**
+- 在事务中同时执行：
+  - 更新 `tasks.status = 'overdue'`（MarkExpiredTx）
+  - 为每个过期的任务写入 `outbox_events` (task.overdue)
+- Outbox Dispatcher 自动发送到 MQ
+- 定时任务：每 1 分钟运行一次（CheckAndMarkOverdue）
 
 **Payload：** `TaskOverduePayload`
 ```go
@@ -560,17 +669,23 @@ MyGoProject/
 
 **消费者：** `task-service` → `TaskOverdueHandler`
 
-**处理流程：**
-- 任务已在数据库中标记为 overdue
+**处理流程（task-service/internal/mqhandler/task_overdue_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
+- **注意：** 任务已在数据库中标记为 overdue（由 task-runner-service 的 CheckAndMarkOverdue 完成）
 - Handler 可用于额外处理（如通知、分析等）
 
 ---
 
 #### 7. task.unlocked（任务解锁事件）
 
-**发布者：** `task-runner-service` (Orchestrator.CheckAndUnlockTasks)  
+**发布者：** `task-runner-service` (Orchestrator.CheckAndUnlockTasks，使用 Outbox 模式)  
 **路由键：** `task.unlocked`  
 **队列：** `task.unlocked.q`
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `TaskUnlockedPayload`
 ```go
@@ -583,17 +698,23 @@ MyGoProject/
 
 **消费者：** `task-service` → `TaskUnlockedHandler`
 
-**处理流程：**
-- 任务的所有依赖已完成，任务已解锁
+**处理流程（task-service/internal/mqhandler/task_unlocked_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
+- **注意：** 任务的所有依赖已完成（由 task-runner-service 的 CheckAndUnlockTasks 检查）
 - Handler 可用于额外处理（如通知用户、分析等）
 
 ---
 
 #### 8. habit.task.generated（习惯任务生成事件）
 
-**发布者：** `task-runner-service` (Orchestrator.GenerateHabitTasks)  
+**发布者：** `task-runner-service` (Orchestrator.GenerateHabitTasks，使用 Outbox 模式)  
 **路由键：** `habit.task.generated`  
 **队列：** `habit.task.generated.q`
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `HabitTaskGeneratedPayload`
 ```go
@@ -607,18 +728,31 @@ MyGoProject/
 
 **消费者：** `task-service` → `HabitTaskGeneratedHandler`
 
-**处理流程：**
+**处理流程（task-service/internal/mqhandler/habit_task_generated_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
 - 插入任务到 `tasks` 表（关联 `habit_id`）
 - `email_id` 为 NULL（习惯任务不关联邮件）
 - 使用唯一索引保证幂等性（同一习惯同一天只生成一次）
+  - 唯一索引：`idx_tasks_unique_pending_habit_date` (habit_id, due_date)
+  - 使用 `ON CONFLICT DO NOTHING` 避免重复插入
 
 ---
 
 #### 9. notification.created（通知创建事件）
 
-**发布者：** `email-processor-service` (AgentDecisionHandler, EmailReceivedNotificationHandler)  
+**发布者：** `email-processor-service` (AgentDecisionHandler, EmailReceivedNotificationHandler，使用 Outbox 模式)  
 **路由键：** `notification.created`  
 **队列：** `notification.created.q`
+
+**发布方式（email-processor-service/internal/mqhandler/agent_handler.go）：**
+- **已使用 Outbox 模式**
+- 在事务中同时执行：
+  - 写入 `emails_metadata`（InsertDecisionTx）
+  - 写入 `outbox_events` (notification.created)
+  - 更新 `emails_raw.status = 'classified'`（UpdateStatusTx）
+- Outbox Dispatcher 自动发送到 MQ
+- **注意：** 通知失败不影响主流程（只记录日志，继续执行）
 
 **Payload：** `NotificationCreatedPayload`
 ```go
@@ -634,18 +768,29 @@ MyGoProject/
 
 **消费者：** `notification-service` → `NotificationCreatedHandler`
 
-**处理流程：**
-1. 插入通知到 `notifications` 表
-2. 调用 `NotificationSender` 发送通知
-3. 根据发送结果发布 `notification.sent` 或 `notification.failed` 事件
+**处理流程（notification-service/internal/mqhandler/notification_created_handler.go）：**
+- 提取 trace_id 并注入 context
+- Redis 去重（避免重复消费）
+- 1. 插入通知到 `notifications` 表
+- 2. 调用 `NotificationSender.SendNotification` 发送通知
+  - 支持多种渠道：EMAIL、PUSH、SMS、WEBHOOK
+  - 当前为模拟实现（sleep 100ms）
+- 3. 根据发送结果在事务中写入 `outbox_events`：
+  - 成功：写入 `notification.sent`
+  - 失败：写入 `notification.failed`（包含错误信息）
+- Outbox Dispatcher 自动发送到 MQ
 
 ---
 
 #### 10. notification.sent（通知发送成功事件）
 
-**发布者：** `notification-service` (NotificationSender)  
+**发布者：** `notification-service` (NotificationSender，使用 Outbox 模式)  
 **路由键：** `notification.sent`  
 **队列：** `notification.sent.q`（可选，用于监控和分析）
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `NotificationSentPayload`
 ```go
@@ -663,9 +808,13 @@ MyGoProject/
 
 #### 11. notification.failed（通知发送失败事件）
 
-**发布者：** `notification-service` (NotificationSender)  
+**发布者：** `notification-service` (NotificationSender，使用 Outbox 模式)  
 **路由键：** `notification.failed`  
 **队列：** `notification.failed.q`（可选，用于重试和监控）
+
+**发布方式：**
+- 在事务中写入 `outbox_events` 表
+- Outbox Dispatcher 自动发送到 MQ
 
 **Payload：** `NotificationFailedPayload`
 ```go
@@ -695,8 +844,12 @@ MyGoProject/
 - `GET /emails` - 查询用户邮件列表
 - `GET /tasks` - 获取用户任务列表（代理到 task-service）
 - `POST /tasks/:id/complete` - 完成任务（代理到 task-service）
-- `POST /tasks/from-text` - 文本转任务（调用 agent-service + 发布 MQ）
-- `POST /tasks/plan-project` - 项目规划（调用 agent-service + 发布 MQ）
+- `POST /tasks/from-text` - 文本转任务（调用 agent-service + Outbox 发布 MQ）
+- `POST /tasks/plan-project` - 项目规划（调用 agent-service + Outbox 发布 MQ）
+
+#### Admin 端点（需要认证）
+- `POST /admin/outbox/replay?id=xxx` - 重放指定的 Outbox 事件
+- `POST /admin/outbox/replay-failed?limit=100` - 重放所有失败的事件
 
 #### 健康检查
 - `GET /healthz` - Liveness 检查
@@ -725,15 +878,30 @@ MyGoProject/
    └─> API Gateway → Mail Ingestion Service
 
 2. Mail Ingestion Service：
+   ├─> 事务开始
    ├─> 保存邮件到 emails_raw
-   └─> 发布 email.received 事件（3个路由键）
+   ├─> 写入 outbox_events（3个路由键：agent, log, notify）
+   └─> 事务提交
+   └─> Outbox Dispatcher 自动发送事件到 MQ
 
 3. Email Processor Service 处理：
-   ├─> email.received.agent → AgentDecisionHandler
-   │   ├─> 调用 agent-service /decide
-   │   ├─> 保存元数据到 emails_metadata
-   │   ├─> 如果 should_create_task → 发布 task.created
-   │   └─> 如果 should_notify → 发布 notification.created
+   ├─> email.received.agent → AgentDecisionHandler（email-processor-service/internal/mqhandler/agent_handler.go）
+   │   ├─> 幂等性检查：如果已 classified，跳过
+   │   ├─> Redis 去重（避免并发重复消费）
+   │   ├─> 调用 agent-service /decide（带熔断器和 fallback）
+   │   │   ├─> 熔断器：失败阈值 3，超时 30 秒
+   │   │   ├─> Fallback：返回默认决策（不创建任务、不发送通知）
+   │   │   └─> 记录 agent_call_latency_ms 指标
+   │   ├─> 事务开始
+   │   ├─> 保存元数据到 emails_metadata（InsertDecisionTx）
+   │   ├─> 如果 should_create_task → 写入 outbox_events (task.created)
+   │   │   └─> aggregate_type="task", aggregate_id=emailID
+   │   ├─> 如果 should_notify → 写入 outbox_events (notification.created)
+   │   │   └─> aggregate_type="email", aggregate_id=emailID
+   │   ├─> 更新邮件状态为 'classified'（UpdateStatusTx）
+   │   └─> 事务提交
+   │   └─> 记录 metrics（IncrementEmailProcessed, IncrementTaskGeneration）
+   │   └─> Outbox Dispatcher 自动发送事件到 MQ
    │
    ├─> email.received.log → NotificationLogHandler
    │   └─> 记录日志到 notifications_log
@@ -760,14 +928,18 @@ MyGoProject/
    └─> API Gateway → TaskController.CreateTasksFromText
 
 2. API Gateway：
-   ├─> 调用 agent-service /text-to-tasks
+   ├─> 调用 agent-service /text-to-tasks（带熔断器）
    │   └─> 返回：{ tasks: [...], habits: [...] }
    │
-   ├─> 发布 habit.created 事件（每个习惯）
-   │   └─> Task Service → HabitCreatedHandler → 保存习惯
+   ├─> 事务开始
+   ├─> 写入 outbox_events (habit.created) - 每个习惯
+   ├─> 写入 outbox_events (task.bulk_created) - 如果有任务
+   └─> 事务提交
+   └─> Outbox Dispatcher 自动发送事件到 MQ
    │
-   └─> 发布 task.bulk_created 事件（如果有任务）
-       └─> Task Service → TaskBulkCreatedHandler → 批量创建任务
+   └─> Task Service 处理：
+       ├─> habit.created → HabitCreatedHandler → 保存习惯
+       └─> task.bulk_created → TaskBulkCreatedHandler → 批量创建任务
 
 3. Task Service：
    └─> habit.created → HabitCreatedHandler → 保存习惯
@@ -790,8 +962,9 @@ MyGoProject/
    Body: { "text": "I want to launch a personal blog in 2 weeks." }
    └─> API Gateway → TaskController.PlanProject
 
-2. API Gateway：
-   ├─> 调用 agent-service /plan-project
+2. API Gateway（api-gateway/internal/handler/task_controller.go）：
+   ├─> 调用 agent-service /plan-project（带熔断器）
+   │   ├─> 熔断器：失败阈值 3，超时 30 秒
    │   └─> 返回项目结构：
    │       {
    │         project: {
@@ -806,7 +979,13 @@ MyGoProject/
    │         }
    │       }
    │
-   └─> 发布 project.created 事件
+   ├─> **已使用 Outbox 模式**
+   ├─> RBAC 验证：确保 user_id 匹配 token
+   ├─> 事务开始
+   ├─> 写入 outbox_events (project.created)
+   │   └─> aggregate_type="project", aggregate_id=nil
+   └─> 事务提交
+   └─> Outbox Dispatcher 自动发送事件到 MQ
 
 3. Task Service：
    └─> ProjectCreatedHandler
@@ -825,22 +1004,39 @@ MyGoProject/
 ### 示例 4：任务编排流程
 
 ```
-1. Task Runner Service 定时任务（每1分钟）：
+1. Task Runner Service 定时任务（每1分钟，task-runner-service/internal/service/orchestrator.go）：
    ├─> Orchestrator.CheckAndMarkOverdue()
-   │   ├─> 扫描过期的 pending 任务
-   │   ├─> 标记为 overdue
-   │   └─> 发布 task.overdue 事件
+   │   ├─> 扫描过期的 pending 任务（ListExpiredPendingTasks）
+   │   ├─> 事务开始
+   │   ├─> 标记为 overdue（MarkExpiredTx）
+   │   ├─> 写入 outbox_events (task.overdue) - 每个任务
+   │   │   └─> aggregate_type="task", aggregate_id=taskID
+   │   └─> 事务提交
+   │   └─> Outbox Dispatcher 自动发送事件到 MQ
    │
    └─> Orchestrator.CheckAndUnlockTasks()
-       ├─> 扫描有依赖的任务
-       ├─> 检查依赖是否完成
-       └─> 如果完成 → 发布 task.unlocked 事件
+       ├─> 扫描有依赖的任务（ListTasksWithDependencies）
+       ├─> 检查依赖是否完成（CompletedDepCount == DepCount）
+       ├─> 事务开始
+       ├─> 写入 outbox_events (task.unlocked) - 已解锁的任务
+       │   └─> aggregate_type="task", aggregate_id=taskID
+       │   └─> **注意：只写入 outbox，不更新任务状态（由 task-service handler 处理）**
+       └─> 事务提交
+       └─> Outbox Dispatcher 自动发送事件到 MQ
 
-2. Task Runner Service 定时任务（每天00:00）：
+2. Task Runner Service 定时任务（每天00:00，task-runner-service/internal/service/orchestrator.go）：
    └─> Orchestrator.GenerateHabitTasks()
-       ├─> 扫描所有活动习惯
-       ├─> 检查今天是否应该生成任务
-       └─> 发布 habit.task.generated 事件
+       ├─> 扫描所有活动习惯（ListAllActive）
+       ├─> 检查今天是否应该生成任务（shouldGenerateToday）
+       │   ├─> daily：每天生成
+       │   ├─> weekly Monday/Tuesday/...：每周指定日期生成
+       │   └─> monthly 1/2/...：每月指定日期生成
+       ├─> 事务开始
+       ├─> 写入 outbox_events (habit.task.generated) - 每个习惯
+       │   └─> aggregate_type="habit", aggregate_id=habitID
+       │   └─> **注意：只写入 outbox，不创建任务（由 task-service handler 处理）**
+       └─> 事务提交
+       └─> Outbox Dispatcher 自动发送事件到 MQ
 
 3. Task Service 处理：
    ├─> task.overdue → TaskOverdueHandler（可用于通知、分析）
@@ -856,13 +1052,22 @@ MyGoProject/
    └─> notification.created 事件
        Payload: { user_id, email_id, channel: "EMAIL", message }
 
-2. Notification Service 处理：
+2. Notification Service 处理（notification-service/internal/mqhandler/notification_created_handler.go）：
    └─> NotificationCreatedHandler
+       ├─> 提取 trace_id 并注入 context
+       ├─> Redis 去重（避免重复消费）
        ├─> 插入通知到 notifications 表
-       ├─> NotificationSender.SendNotification()
+       ├─> NotificationSender.SendNotification()（notification-service/internal/service/notification_sender.go）
        │   ├─> 根据 channel 发送（EMAIL/PUSH/SMS/WEBHOOK）
-       │   ├─> 如果成功 → 发布 notification.sent
-       │   └─> 如果失败 → 发布 notification.failed
+       │   │   └─> 当前为模拟实现（sleep 100ms）
+       │   ├─> 事务开始
+       │   ├─> 如果成功 → 写入 outbox_events (notification.sent)
+       │   │   └─> aggregate_type="notification", aggregate_id=notificationID
+       │   ├─> 如果失败 → 写入 outbox_events (notification.failed)
+       │   │   └─> aggregate_type="notification", aggregate_id=notificationID
+       │   │   └─> 包含错误信息（Error 字段）
+       │   └─> 事务提交
+       │   └─> Outbox Dispatcher 自动发送事件到 MQ
        └─> 支持重试机制（可配置）
 ```
 
@@ -876,6 +1081,9 @@ MyGoProject/
 - **消息队列：** RabbitMQ (amqp091-go)
 - **日志：** zap
 - **JWT：** 自定义实现
+- **可观测性：** Prometheus 指标、分布式追踪（Trace ID）
+- **可靠性：** Outbox 模式、熔断器（Circuit Breaker）
+- **安全：** RBAC（基于角色的访问控制）
 
 ### Python 服务
 - **Web 框架：** FastAPI
@@ -920,24 +1128,24 @@ users
 
 #### 1. 任务过期检查器
 - **频率：** 每 1 分钟运行一次
-- **功能：** 扫描过期的 pending 任务，标记为 overdue，发布 `task.overdue` 事件
+- **功能：** 扫描过期的 pending 任务，标记为 overdue，使用 Outbox 发布 `task.overdue` 事件
 - **实现：** `task-runner-service/cmd/main.go` 中的 `time.Ticker(1 * time.Minute)`
-- **方法：** `Orchestrator.CheckAndMarkOverdue()`
+- **方法：** `Orchestrator.CheckAndMarkOverdue()`（使用事务 + Outbox）
 
 #### 2. 任务依赖解锁检查器
 - **频率：** 每 1 分钟运行一次（与过期检查一起运行）
-- **功能：** 检查有依赖的任务，如果所有依赖已完成，发布 `task.unlocked` 事件
+- **功能：** 检查有依赖的任务，如果所有依赖已完成，使用 Outbox 发布 `task.unlocked` 事件
 - **实现：** `task-runner-service/cmd/main.go` 中的 `time.Ticker(1 * time.Minute)`
-- **方法：** `Orchestrator.CheckAndUnlockTasks()`
+- **方法：** `Orchestrator.CheckAndUnlockTasks()`（使用事务 + Outbox）
 
 #### 3. 习惯任务生成器
 - **频率：** 每天凌晨 00:00 运行一次
-- **功能：** 为所有活动习惯生成当天的任务，发布 `habit.task.generated` 事件
+- **功能：** 为所有活动习惯生成当天的任务，使用 Outbox 发布 `habit.task.generated` 事件
 - **实现：** `task-runner-service/cmd/main.go` 中的 `time.Ticker(24 * time.Hour)`
-- **方法：** `Orchestrator.GenerateHabitTasks()`
+- **方法：** `Orchestrator.GenerateHabitTasks()`（使用事务 + Outbox）
 - **幂等性：** task-service 的 handler 使用唯一索引保证同一天只生成一次
 
-**注意：** 任务编排逻辑已从 `task-service` 迁移到 `task-runner-service`，实现关注点分离。
+**注意：** 任务编排逻辑已从 `task-service` 迁移到 `task-runner-service`，实现关注点分离。所有事件发布都使用 Outbox 模式确保可靠性。
 
 ---
 
@@ -972,6 +1180,30 @@ users
 ### 认证授权
 - JWT Token 认证
 - 所有任务相关操作都需要 user_id（从 JWT 中提取）
+- RBAC：敏感操作需要权限验证（project.created, habit.created, task.bulk_created）
+
+### 事件发布可靠性（Outbox 模式）
+
+**问题：** 直接发布 MQ 事件存在双写不一致问题（业务数据写入成功，但 MQ 发布失败）
+
+**解决方案：** Outbox 模式
+1. **事务写入：** 业务数据和事件在同一事务中写入 `outbox_events` 表
+2. **后台发送：** Outbox Dispatcher 每秒扫描待处理事件并自动发送
+3. **自动重试：** 发送失败时自动重试（最多 5 次，指数退避）
+4. **手动重放：** 通过 Replay API 手动重放失败事件
+
+**优势：**
+- ✅ 事务一致性：业务数据和事件保证一致
+- ✅ 可靠性：MQ 发布失败不影响业务数据
+- ✅ 可追溯：所有事件都有 trace_id
+- ✅ 可恢复：失败事件可以手动重放
+
+**使用 Outbox 的服务：**
+- mail-ingestion-service：`email.received.*` 事件
+- email-processor-service：`task.created`、`notification.created` 事件
+- api-gateway：`habit.created`、`task.bulk_created`、`project.created` 事件
+- task-runner-service：`task.overdue`、`task.unlocked`、`habit.task.generated` 事件
+- notification-service：`notification.sent`、`notification.failed` 事件
 
 ---
 
@@ -1002,28 +1234,83 @@ users
 - ✅ 任务依赖管理
 - ✅ 优先级管理
 - ✅ 通知系统
+- ✅ **Outbox 模式**：可靠的事件发布，保证事务一致性
+- ✅ **熔断器**：防止级联故障，agent-service 失败不影响其他服务
+- ✅ **RBAC**：基于角色的访问控制，防止越权操作
+- ✅ **分布式追踪**：全链路 trace_id 追踪
+- ✅ **Prometheus 指标**：完整的可观测性
 
 所有服务通过 RabbitMQ 异步通信，使用 PostgreSQL 持久化数据，Redis 提供去重和重试计数功能。
 
+### 核心架构特性
+
+1. **可靠事件发布（Outbox 模式）：**
+   - 所有事件发布都使用 Outbox 模式，确保事务一致性
+   - 后台 Dispatcher 自动发送待处理事件
+   - 支持自动重试和手动重放
+
+2. **容错机制：**
+   - 熔断器：快速失败，防止级联故障
+   - Fallback：agent-service 失败时返回默认决策，确保服务继续运行
+
+3. **安全与权限：**
+   - RBAC：敏感操作需要权限验证
+   - user_id 匹配验证：防止越权操作
+
+4. **可观测性：**
+   - 全链路 trace_id：API → MQ → Service → DB
+   - Prometheus 指标：HTTP、MQ、Agent、DB 延迟统计
+   - 结构化日志：自动注入 trace_id
+
 ### 核心功能模块
 
-1. **邮件处理流程：** 邮件接收 → AI 分类 → 自动创建任务/通知
-2. **文本转任务：** 自然语言输入 → LLM 解析 → 批量创建任务
-3. **习惯追踪：** 习惯定义 → 定时生成重复任务
-4. **项目规划：** 项目目标 → 多阶段拆分 → 任务依赖管理
-5. **任务编排引擎：** 定时扫描 → 逾期标记 → 依赖解锁 → 习惯生成
-6. **通知服务：** 多通道通知 → 重试机制 → Webhook 支持
+1. **邮件处理流程：** 邮件接收（Outbox）→ AI 分类（带熔断器+fallback）→ 自动创建任务/通知（Outbox）
+2. **文本转任务：** 自然语言输入 → LLM 解析（带熔断器）→ 批量创建任务（Outbox）
+3. **习惯追踪：** 习惯定义（Outbox）→ 定时生成重复任务（Outbox）
+4. **项目规划：** 项目目标 → 多阶段拆分（Outbox）→ 任务依赖管理
+5. **任务编排引擎：** 定时扫描 → 逾期标记（Outbox）→ 依赖解锁（Outbox）→ 习惯生成（Outbox）
+6. **通知服务：** 多通道通知 → 发送结果（Outbox）→ 重试机制 → Webhook 支持
 
 ### 服务职责分离
 
 - **task-service：** 任务 CRUD 操作，事件消费（不包含定时任务逻辑）
-- **task-runner-service：** 任务编排引擎（定时扫描、逾期检查、依赖解锁、习惯生成）
-- **notification-service：** 通知发送（EMAIL/PUSH/SMS/WEBHOOK），重试机制
-- **email-processor-service：** AI 决策处理，事件发布（发布 task.created 和 notification.created，不再直接操作数据库）
+- **task-runner-service：** 任务编排引擎（定时扫描、逾期检查、依赖解锁、习惯生成），使用 Outbox 发布事件
+- **notification-service：** 通知发送（EMAIL/PUSH/SMS/WEBHOOK），使用 Outbox 发布事件
+- **email-processor-service：** AI 决策处理，使用 Outbox 发布事件（task.created 和 notification.created）
+- **mail-ingestion-service：** 邮件接收，使用 Outbox 发布 email.received 事件
+- **api-gateway：** API 网关，使用 Outbox 发布事件（habit.created、task.bulk_created、project.created）
+
+### Outbox 模式实现
+
+**每个服务的 Outbox 表：**
+- 每个服务在各自的数据库中创建 `outbox_events` 表（服务自治）
+- 运行 migration `002_add_outbox.sql` 创建表结构
+
+**Outbox Dispatcher：**
+- 每个服务启动时自动启动 Dispatcher
+- 每秒扫描一次待处理事件
+- 自动重试失败事件（最多 5 次，指数退避）
+
+**Replay API：**
+- `POST /admin/outbox/replay?id=xxx` - 手动重放指定事件
+- `POST /admin/outbox/replay-failed?limit=100` - 重放所有失败事件
 
 ### 已移除的组件
 
 - **task-service/internal/service/habit_generator.go：** 已迁移到 task-runner-service
 - **email-processor-service/internal/repository/task_repo.go：** 已移除（任务创建改为事件驱动）
 - **email-processor-service/internal/repository/notification_repo.go：** 已移除（通知创建改为事件驱动）
+- **各服务的 config.yaml：** 已迁移到统一配置中心（config/base.yaml, local.yaml, production.yaml, docker.yaml）
+- **直接 MQ 发布：** 所有事件发布已改为 Outbox 模式，确保事务一致性
+
+### 新增的组件
+
+- **pkg/outbox/：** Outbox 模式实现（Repository、Dispatcher、Replay）
+- **pkg/circuitbreaker/：** 熔断器实现
+- **pkg/rbac/：** RBAC 权限控制
+- **pkg/trace/：** 分布式追踪（Trace ID）
+- **pkg/metrics/：** Prometheus 指标
+- **pkg/config/：** 统一配置中心
+- **migrations/002_add_outbox.sql：** Outbox 表结构迁移
+- **api-gateway/internal/handler/admin_handler.go：** Replay API 处理器
 

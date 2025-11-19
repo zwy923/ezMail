@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"time"
 
-	mqcontracts "mygoproject/contracts/mq"
-	"mygoproject/pkg/util"
 	"email-processor-service/internal/repository"
 	"email-processor-service/internal/service"
+	mqcontracts "mygoproject/contracts/mq"
+	"mygoproject/pkg/util"
 
+	"mygoproject/pkg/logger"
+	"mygoproject/pkg/metrics"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
+	"mygoproject/pkg/trace"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -21,8 +26,10 @@ const (
 )
 
 type AgentDecisionHandler struct {
+	db           *pgxpool.Pool
 	emailRepo    *repository.EmailRepository
 	metadataRepo *repository.MetadataRepository
+	outboxRepo   *outbox.Repository
 
 	agentClient  *service.AgentClient
 	retryCounter *util.RetryCounter
@@ -33,6 +40,7 @@ type AgentDecisionHandler struct {
 }
 
 func NewAgentDecisionHandler(
+	db *pgxpool.Pool,
 	emailRepo *repository.EmailRepository,
 	metadataRepo *repository.MetadataRepository,
 	agentClient *service.AgentClient,
@@ -42,8 +50,10 @@ func NewAgentDecisionHandler(
 	logger *zap.Logger,
 ) *AgentDecisionHandler {
 	return &AgentDecisionHandler{
+		db:            db,
 		emailRepo:     emailRepo,
 		metadataRepo:  metadataRepo,
+		outboxRepo:    outbox.NewRepository(db),
 		agentClient:   agentClient,
 		retryCounter:  retryCounter,
 		deduper:       deduper,
@@ -67,7 +77,14 @@ func (h *AgentDecisionHandler) Handle(ctx context.Context, raw json.RawMessage) 
 		return fmt.Errorf("bad_payload: %w", err)
 	}
 
-	h.logger.Info("AgentDecisionHandler: received email",
+	// 从 payload 中提取 trace_id 并添加到 context（如果存在）
+	if payload.TraceID != "" {
+		ctx = trace.WithContext(ctx, payload.TraceID)
+	}
+
+	// 使用带 trace_id 的 logger
+	traceLogger := logger.WithTrace(ctx, h.logger)
+	traceLogger.Info("AgentDecisionHandler: received email",
 		zap.Int("email_id", payload.EmailID),
 		zap.Int("user_id", payload.UserID),
 	)
@@ -118,65 +135,80 @@ func (h *AgentDecisionHandler) Handle(ctx context.Context, raw json.RawMessage) 
 	}
 
 	// --------------------------
-	// Step 5: write metadata
+	// Step 5-8: 使用事务写入 metadata、outbox 事件和更新状态
 	// --------------------------
-	if err := h.metadataRepo.InsertDecision(ctx, payload.EmailID, decision); err != nil {
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Step 5: write metadata (in transaction)
+	if err := h.metadataRepo.InsertDecisionTx(ctx, tx, payload.EmailID, decision); err != nil {
 		return h.handleRepoError("InsertDecision", err)
 	}
 
-	// --------------------------
-	// Step 6: create task (optional)
-	// --------------------------
+	// Step 6: insert task.created event to outbox (if needed)
+	traceID := trace.FromContext(ctx)
+	emailID64 := int64(payload.EmailID)
 	if decision.ShouldCreateTask && decision.Task != nil {
 		taskPayload := mqcontracts.TaskCreatedPayload{
 			EmailID:   payload.EmailID,
 			UserID:    payload.UserID,
 			Title:     decision.Task.Title,
 			DueInDays: decision.Task.DueInDays,
+			TraceID:   traceID,
 		}
 
-		h.logger.Info("Publishing task.created event",
+		if err := outbox.InsertEventInTx(ctx, tx, h.outboxRepo, "task", &emailID64, "task.created", taskPayload); err != nil {
+			h.logger.Error("Failed to insert task.created to outbox", zap.Error(err))
+			return err
+		}
+
+		traceLogger.Info("Inserted task.created event to outbox",
 			zap.Int("email_id", taskPayload.EmailID),
 			zap.Int("user_id", taskPayload.UserID),
 			zap.String("title", taskPayload.Title),
-			zap.Int("due_in_days", taskPayload.DueInDays),
 		)
-
-		if err := h.taskPublisher.Publish("task.created", taskPayload); err != nil {
-			// 这里按你的风格走统一错误处理
-			h.logger.Error("Failed to publish task.created event", zap.Error(err))
-			// 一般来说：MQ 发布失败是可重试错误
-			return err
-		}
 	}
 
-	// --------------------------
-	// Step 7: publish notification.created event (optional)
-	// --------------------------
+	// Step 7: insert notification.created event to outbox (if needed)
 	if decision.ShouldNotify {
-		notiPayload := map[string]interface{}{
-			"user_id":    payload.UserID,
-			"email_id":   payload.EmailID,
-			"channel":    decision.NotificationChannel,
-			"message":    decision.NotificationMessage,
-			"created_at": time.Now(),
+		notiPayload := mqcontracts.NotificationCreatedPayload{
+			UserID:    payload.UserID,
+			EmailID:   payload.EmailID,
+			Channel:   decision.NotificationChannel,
+			Message:   decision.NotificationMessage,
+			CreatedAt: time.Now(),
+			TraceID:   traceID,
 		}
-		if err := h.taskPublisher.Publish("notification.created", notiPayload); err != nil {
-			h.logger.Error("Failed to publish notification.created event", zap.Error(err))
+
+		if err := outbox.InsertEventInTx(ctx, tx, h.outboxRepo, "email", &emailID64, "notification.created", notiPayload); err != nil {
+			h.logger.Error("Failed to insert notification.created to outbox", zap.Error(err))
 			// 通知失败不影响主流程，继续
 		} else {
-			h.logger.Info("Published notification.created event",
+			traceLogger.Info("Inserted notification.created event to outbox",
 				zap.Int("user_id", payload.UserID),
 				zap.Int("email_id", payload.EmailID),
 			)
 		}
 	}
 
-	// --------------------------
-	// Step 8: update email status
-	// --------------------------
-	if err := h.emailRepo.UpdateStatus(ctx, payload.EmailID, "classified"); err != nil {
+	// Step 8: update email status (in transaction)
+	if err := h.emailRepo.UpdateStatusTx(ctx, tx, payload.EmailID, "classified"); err != nil {
 		return h.handleRepoError("UpdateStatus", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// 记录邮件处理成功
+	metrics.IncrementEmailProcessed("success")
+	// 记录任务生成（如果创建了任务）
+	if decision.ShouldCreateTask && decision.Task != nil {
+		metrics.IncrementTaskGeneration("email")
 	}
 
 	// --------------------------

@@ -4,6 +4,7 @@ import (
 	"context"
 	"email-processor-service/internal/model"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,6 +36,36 @@ func (r *MetadataRepository) InsertDecision(
 	`
 
 	_, err := r.db.Exec(ctx, sql,
+		emailID,
+		decision.Categories,
+		decision.Priority,
+		decision.Summary,
+	)
+
+	return err
+}
+
+// InsertDecisionTx inserts decision in a transaction
+func (r *MetadataRepository) InsertDecisionTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	emailID int,
+	decision *model.AgentDecision,
+) error {
+	sql := `
+		INSERT INTO emails_metadata
+			(email_id, categories, priority, summary, created_at, updated_at)
+		VALUES
+			($1, $2, $3, $4, NOW(), NOW())
+		ON CONFLICT (email_id)
+		DO UPDATE SET
+			categories = EXCLUDED.categories,
+			priority   = EXCLUDED.priority,
+			summary    = EXCLUDED.summary,
+			updated_at = NOW();
+	`
+
+	_, err := tx.Exec(ctx, sql,
 		emailID,
 		decision.Categories,
 		decision.Priority,

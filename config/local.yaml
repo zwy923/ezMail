@@ -1,0 +1,32 @@
+# 本地开发环境配置
+# 覆盖 base.yaml 中的配置
+
+db:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: "0923"
+  name: mygoproject
+
+mq:
+  url: amqp://guest:guest@localhost:5672/
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "zwy923"
+
+server:
+  port: ":8080"
+
+services:
+  mail_ingestion: http://localhost:8081
+  task: http://localhost:8082
+  agent: http://localhost:8000
+  notification: http://localhost:8085
+  email_processor: http://localhost:8083
+  task_runner: http://localhost:8084
+

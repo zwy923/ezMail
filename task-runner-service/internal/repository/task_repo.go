@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
@@ -29,6 +30,30 @@ func (r *TaskRepository) MarkExpired(ctx context.Context) error {
           AND due_date IS NOT NULL
     `
 	result, err := r.db.Exec(ctx, query)
+	if err != nil {
+		r.logger.Error("Failed to mark expired tasks", zap.Error(err))
+		return err
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected > 0 {
+		r.logger.Info("Marked tasks as overdue",
+			zap.Int64("count", rowsAffected),
+		)
+	}
+	return nil
+}
+
+// MarkExpiredTx marks tasks as overdue in a transaction
+func (r *TaskRepository) MarkExpiredTx(ctx context.Context, tx pgx.Tx) error {
+	query := `
+        UPDATE tasks
+        SET status = 'overdue'
+        WHERE status = 'pending'
+          AND due_date < CURRENT_DATE
+          AND due_date IS NOT NULL
+    `
+	result, err := tx.Exec(ctx, query)
 	if err != nil {
 		r.logger.Error("Failed to mark expired tasks", zap.Error(err))
 		return err

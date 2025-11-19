@@ -1,0 +1,33 @@
+# 基础配置 - 所有环境共享的默认配置
+# 注意：这些是默认值，会被环境特定配置覆盖
+
+db:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: ""
+  name: mygoproject
+
+mq:
+  url: amqp://guest:guest@localhost:5672/
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: ""
+
+server:
+  port: ":8080"
+
+# 服务 URL 配置（默认使用 localhost，Docker 环境会被 docker.yaml 覆盖）
+services:
+  mail_ingestion: http://localhost:8081
+  task: http://localhost:8082
+  agent: http://localhost:8000
+  notification: http://localhost:8085
+  email_processor: http://localhost:8083
+  task_runner: http://localhost:8084
+

@@ -12,6 +12,7 @@ import (
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
 	"task-runner-service/internal/config"
 	"task-runner-service/internal/httpserver"
 	"task-runner-service/internal/repository"
@@ -53,7 +54,12 @@ func main() {
 	habitRepo := repository.NewHabitRepository(dbConn, log)
 
 	// Orchestrator
-	orchestrator := service.NewOrchestrator(taskRepo, habitRepo, publisher, log)
+	orchestrator := service.NewOrchestrator(dbConn, taskRepo, habitRepo, publisher, log)
+
+	// Init Outbox Dispatcher
+	outboxRepo := outbox.NewRepository(dbConn)
+	dispatcher := outbox.NewDispatcher(outboxRepo, publisher, log)
+	go dispatcher.Start(context.Background())
 
 	// Task Orchestrator - runs every 1 minute
 	log.Info("Starting task orchestrator (runs every 1 minute)...")

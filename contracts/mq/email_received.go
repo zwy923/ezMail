@@ -9,4 +9,5 @@ type EmailReceivedPayload struct {
 	Subject    string    `json:"subject"`
 	Body       string    `json:"body"`
 	ReceivedAt time.Time `json:"received_at"`
+	TraceID    string    `json:"trace_id,omitempty"`
 }

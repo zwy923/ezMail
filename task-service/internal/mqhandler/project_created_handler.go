@@ -3,6 +3,7 @@ package mqhandler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	mqcontracts "mygoproject/contracts/mq"
@@ -44,7 +45,16 @@ func (h *ProjectCreatedHandler) Handle(ctx context.Context, raw json.RawMessage)
 		zap.Int("user_id", p.UserID),
 		zap.String("title", p.Title),
 		zap.Int("milestone_count", len(p.Milestones)),
+		zap.String("trace_id", p.TraceID),
 	)
+
+	// RBAC 验证：验证 user_id 有效性（MQ 事件来自内部服务，但记录用于审计）
+	if p.UserID <= 0 {
+		h.logger.Error("Invalid user_id in project.created event",
+			zap.Int("user_id", p.UserID),
+		)
+		return fmt.Errorf("invalid user_id: %d", p.UserID)
+	}
 
 	// Step 1: Create project
 	now := time.Now()

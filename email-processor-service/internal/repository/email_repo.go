@@ -4,6 +4,7 @@ import (
 	"context"
 	"mygoproject/contracts/db"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -58,5 +59,16 @@ func (r *EmailRepository) UpdateStatus(ctx context.Context, id int, status strin
         WHERE id = $2
     `
 	_, err := r.db.Exec(ctx, query, status, id)
+	return err
+}
+
+// UpdateStatusTx sets raw email status in a transaction
+func (r *EmailRepository) UpdateStatusTx(ctx context.Context, tx pgx.Tx, id int, status string) error {
+	query := `
+        UPDATE emails_raw
+        SET status = $1
+        WHERE id = $2
+    `
+	_, err := tx.Exec(ctx, query, status, id)
 	return err
 }

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
+	"mygoproject/pkg/metrics"
+	"mygoproject/pkg/trace"
 )
 
 // contains 检查字符串是否包含子串（不区分大小写）
@@ -191,12 +194,33 @@ func (c *Consumer) StartConsuming() error {
 				return nil
 			}
 			func() {
-				ctx := context.Background()
+				// 记录消费开始时间
+				consumeStart := time.Now()
 
+				// 从消息头中提取 trace_id 并添加到 context
+				ctx := context.Background()
+				if traceIDHeader, ok := msg.Headers["x-trace-id"]; ok {
+					if traceID, ok := traceIDHeader.(string); ok && traceID != "" {
+						ctx = trace.WithContext(ctx, traceID)
+					}
+				}
+
+				// 如果消息头中没有 trace_id，尝试从 payload 中提取（向后兼容）
+				if traceID := trace.FromContext(ctx); traceID == "" {
+					var payloadWithTrace struct {
+						TraceID string `json:"trace_id"`
+					}
+					if err := json.Unmarshal(msg.Body, &payloadWithTrace); err == nil && payloadWithTrace.TraceID != "" {
+						ctx = trace.WithContext(ctx, payloadWithTrace.TraceID)
+					}
+				}
+
+				traceID := trace.FromContext(ctx)
 				c.logger.Debug("Received message",
 					zap.String("routing_key", c.routingKey),
 					zap.String("queue", c.queue.Name),
 					zap.Int("message_size", len(msg.Body)),
+					zap.String("trace_id", traceID),
 				)
 
 			// Panic 恢复：确保即使 handler panic 也能正确处理消息
@@ -214,6 +238,9 @@ func (c *Consumer) StartConsuming() error {
 							zap.Error(err),
 						)
 					}
+					// 记录消费延迟
+					consumeLatency := time.Since(consumeStart)
+					metrics.RecordMQConsumeLatency(c.routingKey, c.queue.Name, consumeLatency)
 				}
 			}()
 
@@ -257,6 +284,9 @@ func (c *Consumer) StartConsuming() error {
 							zap.Error(err),
 						)
 					}
+					// 记录消费延迟
+					consumeLatency := time.Since(consumeStart)
+					metrics.RecordMQConsumeLatency(c.routingKey, c.queue.Name, consumeLatency)
 					return
 				}
 
@@ -283,6 +313,9 @@ func (c *Consumer) StartConsuming() error {
 							zap.Error(err),
 						)
 					}
+					// 记录消费延迟
+					consumeLatency := time.Since(consumeStart)
+					metrics.RecordMQConsumeLatency(c.routingKey, c.queue.Name, consumeLatency)
 					return
 				}
 
@@ -294,6 +327,9 @@ func (c *Consumer) StartConsuming() error {
 						zap.Error(err),
 					)
 				}
+				// 记录消费延迟
+				consumeLatency := time.Since(consumeStart)
+				metrics.RecordMQConsumeLatency(c.routingKey, c.queue.Name, consumeLatency)
 				return
 			}
 
@@ -309,6 +345,9 @@ func (c *Consumer) StartConsuming() error {
 					zap.String("queue", c.queue.Name),
 				)
 			}
+			// 记录消费延迟
+			consumeLatency := time.Since(consumeStart)
+			metrics.RecordMQConsumeLatency(c.routingKey, c.queue.Name, consumeLatency)
 		}()
 		}
 	}

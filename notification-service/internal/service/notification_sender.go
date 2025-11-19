@@ -6,26 +6,34 @@ import (
 	"time"
 
 	"notification-service/internal/repository"
+	mqcontracts "mygoproject/contracts/mq"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
 type NotificationSender struct {
-	repo     *repository.NotificationRepository
-	publisher *mq.Publisher
-	logger   *zap.Logger
+	db         *pgxpool.Pool
+	repo       *repository.NotificationRepository
+	publisher  *mq.Publisher
+	outboxRepo *outbox.Repository
+	logger     *zap.Logger
 }
 
 func NewNotificationSender(
+	db *pgxpool.Pool,
 	repo *repository.NotificationRepository,
 	publisher *mq.Publisher,
 	logger *zap.Logger,
 ) *NotificationSender {
 	return &NotificationSender{
-		repo:      repo,
-		publisher: publisher,
-		logger:    logger,
+		db:         db,
+		repo:       repo,
+		publisher:  publisher,
+		outboxRepo: outbox.NewRepository(db),
+		logger:     logger,
 	}
 }
 
@@ -51,6 +59,14 @@ func (s *NotificationSender) SendNotification(ctx context.Context, notificationI
 		err = fmt.Errorf("unsupported channel: %s", channel)
 	}
 
+	// 使用事务写入 Outbox 事件
+	tx, txErr := s.db.Begin(ctx)
+	if txErr != nil {
+		s.logger.Error("Failed to begin transaction", zap.Error(txErr))
+		return txErr
+	}
+	defer tx.Rollback(ctx)
+
 	if err != nil {
 		s.logger.Error("Failed to send notification",
 			zap.Int("notification_id", notificationID),
@@ -58,29 +74,44 @@ func (s *NotificationSender) SendNotification(ctx context.Context, notificationI
 			zap.Error(err),
 		)
 		
-		// Publish notification.failed event
-		payload := map[string]interface{}{
-			"notification_id": notificationID,
-			"user_id":         userID,
-			"channel":         channel,
-			"error":           err.Error(),
-			"retry_count":     0,
+		// Insert notification.failed event to outbox (in transaction)
+		payload := mqcontracts.NotificationFailedPayload{
+			NotificationID: notificationID,
+			UserID:         userID,
+			Channel:        channel,
+			Error:          err.Error(),
+			RetryCount:     0,
 		}
-		if pubErr := s.publisher.Publish("notification.failed", payload); pubErr != nil {
-			s.logger.Error("Failed to publish notification.failed event", zap.Error(pubErr))
+		notiID64 := int64(notificationID)
+		if pubErr := outbox.InsertEventInTx(ctx, tx, s.outboxRepo, "notification", &notiID64, "notification.failed", payload); pubErr != nil {
+			s.logger.Error("Failed to insert notification.failed to outbox", zap.Error(pubErr))
+			return pubErr
+		}
+
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			s.logger.Error("Failed to commit transaction", zap.Error(commitErr))
+			return commitErr
 		}
 		return err
 	}
 
-	// Publish notification.sent event
-	payload := map[string]interface{}{
-		"notification_id": notificationID,
-		"user_id":         userID,
-		"channel":         channel,
-		"sent_at":         time.Now(),
+	// Insert notification.sent event to outbox (in transaction)
+	payload := mqcontracts.NotificationSentPayload{
+		NotificationID: notificationID,
+		UserID:         userID,
+		Channel:        channel,
+		SentAt:         time.Now(),
 	}
-	if err := s.publisher.Publish("notification.sent", payload); err != nil {
-		s.logger.Error("Failed to publish notification.sent event", zap.Error(err))
+	notiID64 := int64(notificationID)
+	if err := outbox.InsertEventInTx(ctx, tx, s.outboxRepo, "notification", &notiID64, "notification.sent", payload); err != nil {
+		s.logger.Error("Failed to insert notification.sent to outbox", zap.Error(err))
+		return err
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		s.logger.Error("Failed to commit transaction", zap.Error(err))
+		return err
 	}
 
 	s.logger.Info("Notification sent successfully",

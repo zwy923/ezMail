@@ -8,9 +8,11 @@ import (
 	"mail-ingestion-service/internal/httpserver"
 	"mail-ingestion-service/internal/repository"
 	"mail-ingestion-service/internal/service/ingest"
+	"context"
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
 	"mygoproject/pkg/mq"
+	"mygoproject/pkg/outbox"
 
 	"go.uber.org/zap"
 )
@@ -38,10 +40,14 @@ func main() {
 
 	// Init Repositories
 	emailRepo := repository.NewEmailRepository(dbConn)
-	failedEventRepo := repository.NewFailedEventRepository(dbConn)
 
 	// Init Services
-	ingestService := ingest.NewService(emailRepo, failedEventRepo, publisher, logger)
+	ingestService := ingest.NewService(dbConn, emailRepo, logger)
+
+	// Init Outbox Dispatcher
+	outboxRepo := outbox.NewRepository(dbConn)
+	dispatcher := outbox.NewDispatcher(outboxRepo, publisher, logger)
+	go dispatcher.Start(context.Background())
 
 	// Init Handlers
 	ingestHandler := handler.NewIngestHandler(ingestService)

@@ -1,0 +1,33 @@
+# 生产环境配置
+# 覆盖 base.yaml 中的配置
+# 注意：敏感信息应该通过环境变量或 secrets.env 提供
+
+db:
+  host: ${DB_HOST}
+  port: ${DB_PORT}
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
+  name: ${DB_NAME}
+
+mq:
+  url: ${MQ_URL}
+
+redis:
+  addr: ${REDIS_ADDR}
+  password: ${REDIS_PASSWORD}
+  db: ${REDIS_DB}
+
+jwt:
+  secret: ${JWT_SECRET}
+
+server:
+  port: ${SERVER_PORT}
+
+services:
+  mail_ingestion: ${MAIL_INGESTION_SERVICE_URL}
+  task: ${TASK_SERVICE_URL}
+  agent: ${AGENT_SERVICE_URL}
+  notification: ${NOTIFICATION_SERVICE_URL}
+  email_processor: ${EMAIL_PROCESSOR_SERVICE_URL}
+  task_runner: ${TASK_RUNNER_SERVICE_URL}
+

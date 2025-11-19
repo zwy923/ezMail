@@ -27,9 +27,9 @@ RUN apk --no-cache add ca-certificates tzdata wget
 
 WORKDIR /app
 
-# 从构建阶段复制二进制文件
+# 从构建阶段复制二进制文件和统一配置目录
 COPY --from=builder /build/task-service/task-service .
-COPY --from=builder /build/task-service/config.yaml .
+COPY --from=builder /build/config ./config
 
 # 设置时区
 ENV TZ=Asia/Shanghai

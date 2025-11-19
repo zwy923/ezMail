@@ -1,8 +1,11 @@
 package mq
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+
+	"mygoproject/pkg/trace"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -59,9 +62,20 @@ func (p *Publisher) IsConnected() bool {
 
 // Publish publishes an event to the exchange with the given routing key.
 func (p *Publisher) Publish(routingKey string, payload any) error {
+	return p.PublishWithContext(context.Background(), routingKey, payload)
+}
+
+// PublishWithContext publishes an event with trace_id from context.
+func (p *Publisher) PublishWithContext(ctx context.Context, routingKey string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
+	}
+
+	// 从 context 中提取 trace_id 并添加到消息头
+	headers := amqp091.Table{}
+	if traceID := trace.FromContext(ctx); traceID != "" {
+		headers["x-trace-id"] = traceID
 	}
 
 	return p.channel.Publish(
@@ -73,7 +87,7 @@ func (p *Publisher) Publish(routingKey string, payload any) error {
 			ContentType:  "application/json",
 			Body:         body,
 			DeliveryMode: amqp091.Persistent,
+			Headers:      headers,
 		},
 	)
 }
-
