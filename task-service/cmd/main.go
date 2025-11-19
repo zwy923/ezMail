@@ -42,10 +42,20 @@ func main() {
 	log.Info("Database connection established successfully")
 
 	taskRepo := repository.NewTaskRepository(dbConn, log)
-	mqHandler := mqhandler.NewTaskCreatedHandler(taskRepo, log)
+	habitRepo := repository.NewHabitRepository(dbConn, log)
+	projectRepo := repository.NewProjectRepository(dbConn, log)
+	milestoneRepo := repository.NewMilestoneRepository(dbConn, log)
 
-	// MQ Consumer
-	log.Info("Initializing MQ consumer...",
+	taskCreatedHandler := mqhandler.NewTaskCreatedHandler(taskRepo, log)
+	taskBulkCreatedHandler := mqhandler.NewTaskBulkCreatedHandler(taskRepo, log)
+	habitCreatedHandler := mqhandler.NewHabitCreatedHandler(habitRepo, log)
+	projectCreatedHandler := mqhandler.NewProjectCreatedHandler(projectRepo, milestoneRepo, taskRepo, log)
+	taskOverdueHandler := mqhandler.NewTaskOverdueHandler(taskRepo, log)
+	taskUnlockedHandler := mqhandler.NewTaskUnlockedHandler(taskRepo, log)
+	habitTaskGeneratedHandler := mqhandler.NewHabitTaskGeneratedHandler(taskRepo, log)
+
+	// MQ Consumer for task.created
+	log.Info("Initializing MQ consumer for task.created...",
 		zap.String("queue", "task.created.q"),
 		zap.String("routing_key", "task.created"),
 	)
@@ -55,15 +65,135 @@ func main() {
 	}
 	defer consumer.Close()
 
-	consumer.SetHandler(mqHandler.Handle)
+	consumer.SetHandler(taskCreatedHandler.Handle)
 
 	go func() {
-		log.Info("Starting MQ consumer...")
+		log.Info("Starting task.created consumer...")
 		if err := consumer.StartConsuming(); err != nil {
 			log.Fatal("Task consumer failed", zap.Error(err))
 		}
 	}()
-	log.Info("MQ consumer started successfully")
+	log.Info("task.created consumer started successfully")
+
+	// MQ Consumer for task.bulk_created
+	log.Info("Initializing MQ consumer for task.bulk_created...",
+		zap.String("queue", "task.bulk_created.q"),
+		zap.String("routing_key", "task.bulk_created"),
+	)
+	bulkConsumer, err := mq.NewConsumer(cfg.MQ.URL, "task.bulk_created.q", "task.bulk_created", log)
+	if err != nil {
+		log.Fatal("Failed to init bulk consumer", zap.Error(err))
+	}
+	defer bulkConsumer.Close()
+
+	bulkConsumer.SetHandler(taskBulkCreatedHandler.Handle)
+
+	go func() {
+		log.Info("Starting task.bulk_created consumer...")
+		if err := bulkConsumer.StartConsuming(); err != nil {
+			log.Fatal("Bulk task consumer failed", zap.Error(err))
+		}
+	}()
+	log.Info("task.bulk_created consumer started successfully")
+
+	// MQ Consumer for habit.created
+	log.Info("Initializing MQ consumer for habit.created...",
+		zap.String("queue", "habit.created.q"),
+		zap.String("routing_key", "habit.created"),
+	)
+	habitConsumer, err := mq.NewConsumer(cfg.MQ.URL, "habit.created.q", "habit.created", log)
+	if err != nil {
+		log.Fatal("Failed to init habit consumer", zap.Error(err))
+	}
+	defer habitConsumer.Close()
+
+	habitConsumer.SetHandler(habitCreatedHandler.Handle)
+
+	go func() {
+		log.Info("Starting habit.created consumer...")
+		if err := habitConsumer.StartConsuming(); err != nil {
+			log.Fatal("Habit consumer failed", zap.Error(err))
+		}
+	}()
+	log.Info("habit.created consumer started successfully")
+
+	// MQ Consumer for project.created
+	log.Info("Initializing MQ consumer for project.created...",
+		zap.String("queue", "project.created.q"),
+		zap.String("routing_key", "project.created"),
+	)
+	projectConsumer, err := mq.NewConsumer(cfg.MQ.URL, "project.created.q", "project.created", log)
+	if err != nil {
+		log.Fatal("Failed to init project consumer", zap.Error(err))
+	}
+	defer projectConsumer.Close()
+
+	projectConsumer.SetHandler(projectCreatedHandler.Handle)
+
+	go func() {
+		log.Info("Starting project.created consumer...")
+		if err := projectConsumer.StartConsuming(); err != nil {
+			log.Fatal("Project consumer failed", zap.Error(err))
+		}
+	}()
+	log.Info("project.created consumer started successfully")
+
+	// MQ Consumer for task.overdue
+	log.Info("Initializing MQ consumer for task.overdue...",
+		zap.String("queue", "task.overdue.q"),
+		zap.String("routing_key", "task.overdue"),
+	)
+	overdueConsumer, err := mq.NewConsumer(cfg.MQ.URL, "task.overdue.q", "task.overdue", log)
+	if err != nil {
+		log.Fatal("Failed to init overdue consumer", zap.Error(err))
+	}
+	defer overdueConsumer.Close()
+	overdueConsumer.SetHandler(taskOverdueHandler.Handle)
+	go func() {
+		log.Info("Starting task.overdue consumer...")
+		if err := overdueConsumer.StartConsuming(); err != nil {
+			log.Fatal("Overdue consumer failed", zap.Error(err))
+		}
+	}()
+	log.Info("task.overdue consumer started successfully")
+
+	// MQ Consumer for task.unlocked
+	log.Info("Initializing MQ consumer for task.unlocked...",
+		zap.String("queue", "task.unlocked.q"),
+		zap.String("routing_key", "task.unlocked"),
+	)
+	unlockedConsumer, err := mq.NewConsumer(cfg.MQ.URL, "task.unlocked.q", "task.unlocked", log)
+	if err != nil {
+		log.Fatal("Failed to init unlocked consumer", zap.Error(err))
+	}
+	defer unlockedConsumer.Close()
+	unlockedConsumer.SetHandler(taskUnlockedHandler.Handle)
+	go func() {
+		log.Info("Starting task.unlocked consumer...")
+		if err := unlockedConsumer.StartConsuming(); err != nil {
+			log.Fatal("Unlocked consumer failed", zap.Error(err))
+		}
+	}()
+	log.Info("task.unlocked consumer started successfully")
+
+	// MQ Consumer for habit.task.generated
+	log.Info("Initializing MQ consumer for habit.task.generated...",
+		zap.String("queue", "habit.task.generated.q"),
+		zap.String("routing_key", "habit.task.generated"),
+	)
+	habitTaskGenConsumer, err := mq.NewConsumer(cfg.MQ.URL, "habit.task.generated.q", "habit.task.generated", log)
+	if err != nil {
+		log.Fatal("Failed to init habit task gen consumer", zap.Error(err))
+	}
+	defer habitTaskGenConsumer.Close()
+	habitTaskGenConsumer.SetHandler(habitTaskGeneratedHandler.Handle)
+	go func() {
+		log.Info("Starting habit.task.generated consumer...")
+		if err := habitTaskGenConsumer.StartConsuming(); err != nil {
+			log.Fatal("Habit task gen consumer failed", zap.Error(err))
+		}
+	}()
+	log.Info("habit.task.generated consumer started successfully")
 
 	// HTTP Server
 	log.Info("Initializing HTTP server...", zap.String("port", "8082"))
@@ -82,33 +212,14 @@ func main() {
 		}
 	}()
 
-	// Task Expiration Checker
-	log.Info("Starting task expiration checker (runs every 1 minute)...")
-	expirationCtx, expirationCancel := context.WithCancel(context.Background())
-	defer expirationCancel()
-
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-expirationCtx.Done():
-				log.Info("Task expiration checker stopped")
-				return
-			case <-ticker.C:
-				log.Info("Running task expiration check...")
-				if err := taskRepo.MarkExpired(context.Background()); err != nil {
-					log.Error("Task expiration check failed", zap.Error(err))
-				} else {
-					log.Debug("Task expiration check completed successfully")
-				}
-			}
-		}
-	}()
+	// Note: Task orchestration (expiration check, habit generation, dependency unlock)
+	// has been moved to task-runner-service. This service now only handles
+	// task CRUD operations and event consumption.
 
 	log.Info("task-service is fully initialized and running",
 		zap.String("http_port", "8082"),
-		zap.String("mq_queue", "task.created.q"),
+		zap.String("mq_queue_created", "task.created.q"),
+		zap.String("mq_queue_bulk", "task.bulk_created.q"),
 	)
 
 	// 优雅退出处理
@@ -118,12 +229,15 @@ func main() {
 
 	log.Info("Shutting down task-service gracefully...")
 
-	// 停止任务过期检查器
-	expirationCancel()
-
 	// 停止 MQ 消费者
-	log.Info("Stopping MQ consumer...")
+	log.Info("Stopping MQ consumers...")
 	consumer.Stop()
+	bulkConsumer.Stop()
+	habitConsumer.Stop()
+	projectConsumer.Stop()
+	overdueConsumer.Stop()
+	unlockedConsumer.Stop()
+	habitTaskGenConsumer.Stop()
 
 	// 关闭 HTTP 服务器
 	log.Info("Shutting down HTTP server...")

@@ -47,16 +47,65 @@ CREATE TABLE IF NOT EXISTS emails_metadata (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Tasks (Agent-created tasks)
+-- Habits (Recurring tasks)
+CREATE TABLE IF NOT EXISTS habits (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    recurrence_pattern VARCHAR(100) NOT NULL, -- "weekly Wednesday", "daily", "monthly 1"
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Projects (AI-generated project plans)
+CREATE TABLE IF NOT EXISTS projects (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    target_date DATE, -- Project deadline
+    status VARCHAR(50) NOT NULL DEFAULT 'active', -- active / completed / cancelled
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Milestones (Project phases)
+CREATE TABLE IF NOT EXISTS milestones (
+    id SERIAL PRIMARY KEY,
+    project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    phase_order INT NOT NULL, -- Order of phase (1, 2, 3, ...)
+    target_date DATE, -- Milestone deadline
+    status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending / in_progress / completed
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Tasks (Agent-created tasks, habit-generated tasks, and project tasks)
 CREATE TABLE IF NOT EXISTS tasks (
     id SERIAL PRIMARY KEY,
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    email_id INT NOT NULL REFERENCES emails_raw(id) ON DELETE CASCADE,
+    email_id INT DEFAULT NULL REFERENCES emails_raw(id) ON DELETE CASCADE, -- NULL for habit/project-generated tasks
+    habit_id INT DEFAULT NULL REFERENCES habits(id) ON DELETE CASCADE, -- NULL for one-time/project tasks
+    project_id INT DEFAULT NULL REFERENCES projects(id) ON DELETE CASCADE, -- NULL for non-project tasks
+    milestone_id INT DEFAULT NULL REFERENCES milestones(id) ON DELETE CASCADE, -- NULL for tasks not in a milestone
     title VARCHAR(255) NOT NULL,
     due_date DATE,
+    priority VARCHAR(20) DEFAULT 'MEDIUM', -- LOW / MEDIUM / HIGH
     status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending / done / overdue
     completed_at TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Task Dependencies (Task prerequisites)
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    id SERIAL PRIMARY KEY,
+    task_id INT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id INT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT task_dependencies_no_self_reference CHECK (task_id != depends_on_task_id)
 );
 
 -- Notification Inbox (user notifications)
@@ -105,13 +154,39 @@ CREATE TABLE IF NOT EXISTS failed_events (
 CREATE INDEX IF NOT EXISTS idx_emails_raw_user ON emails_raw(user_id);
 CREATE INDEX IF NOT EXISTS idx_emails_raw_status ON emails_raw(status);
 
+-- Habits indexes
+CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
+CREATE INDEX IF NOT EXISTS idx_habits_active ON habits(is_active) WHERE is_active = TRUE;
+
+-- Projects indexes
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
+CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+
+-- Milestones indexes
+CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id);
+CREATE INDEX IF NOT EXISTS idx_milestones_status ON milestones(status);
+CREATE INDEX IF NOT EXISTS idx_milestones_order ON milestones(project_id, phase_order);
+
 -- Tasks indexes
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_habit ON tasks(habit_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON tasks(milestone_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+
+-- Task Dependencies indexes
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_task ON task_dependencies(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends_on ON task_dependencies(depends_on_task_id);
 
 -- Unique constraint: only one pending task per email_id + user_id combination
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_unique_pending_email_user
-    ON tasks(email_id, user_id) WHERE status = 'pending';
+    ON tasks(email_id, user_id) WHERE status = 'pending' AND email_id IS NOT NULL;
+
+-- Unique constraint: only one pending task per habit_id + due_date (幂等性：避免重复生成同一天的重复任务)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_unique_pending_habit_date
+    ON tasks(habit_id, due_date) WHERE status = 'pending' AND habit_id IS NOT NULL;
 
 -- Notifications indexes
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);

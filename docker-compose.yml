@@ -72,12 +72,17 @@ services:
       DB_NAME: mygoproject
       JWT_SECRET: zwy923
       SERVER_PORT: :8080
+      MQ_URL: amqp://guest:guest@rabbitmq:5672/
       MAIL_INGESTION_SERVICE_URL: http://mail-ingestion-service:8081
       TASK_SERVICE_URL: http://task-service:8082
+      AGENT_SERVICE_URL: http://agent-service:8000
+      NOTIFICATION_SERVICE_URL: http://notification-service:8085
     volumes:
       - ./api-gateway/config.yaml:/app/config.yaml:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - app-network
@@ -122,12 +127,12 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Worker Service
-  worker-service:
+  # Email Processor Service
+  email-processor-service:
     build:
       context: .
-      dockerfile: worker-service/Dockerfile
-    container_name: mygoproject-worker
+      dockerfile: email-processor-service/Dockerfile
+    container_name: mygoproject-email-processor
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -140,7 +145,7 @@ services:
       REDIS_DB: "0"
       AGENT_SERVICE_URL: http://agent-service:8000
     volumes:
-      - ./worker-service/config.yaml:/app/config.yaml:ro
+      - ./email-processor-service/config.yaml:/app/config.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -180,6 +185,71 @@ services:
       - app-network
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Task Runner Service (Task Orchestrator)
+  task-runner-service:
+    build:
+      context: .
+      dockerfile: task-runner-service/Dockerfile
+    container_name: mygoproject-task-runner
+    ports:
+      - "8084:8084"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: 0923
+      DB_NAME: mygoproject
+      MQ_URL: amqp://guest:guest@rabbitmq:5672/
+      AGENT_SERVICE_URL: http://agent-service:8000
+    volumes:
+      - ./task-runner-service/config.yaml:/root/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Notification Service
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    container_name: mygoproject-notification
+    ports:
+      - "8085:8085"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: 0923
+      DB_NAME: mygoproject
+      MQ_URL: amqp://guest:guest@rabbitmq:5672/
+    volumes:
+      - ./notification-service/config.yaml:/root/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/healthz"]
       interval: 5s
       timeout: 3s
       retries: 3

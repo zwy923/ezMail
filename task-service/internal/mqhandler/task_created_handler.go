@@ -3,6 +3,7 @@ package mqhandler
 import (
     "context"
     "encoding/json"
+    "fmt"
     "time"
 
     mqcontracts "mygoproject/contracts/mq"
@@ -34,6 +35,15 @@ func (h *TaskCreatedHandler) Handle(ctx context.Context, raw json.RawMessage) er
         zap.String("title", p.Title),
         zap.Int("due_in_days", p.DueInDays),
     )
+
+    // 验证 email_id（task.created 事件必须来自邮件）
+    if p.EmailID <= 0 {
+        h.logger.Error("Invalid email_id in task.created event",
+            zap.Int("email_id", p.EmailID),
+            zap.Int("user_id", p.UserID),
+        )
+        return fmt.Errorf("invalid email_id: %d (must be > 0)", p.EmailID)
+    }
 
     dueDate := time.Now().AddDate(0, 0, p.DueInDays)
 

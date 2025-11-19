@@ -11,5 +11,10 @@ jwt:
 server:
   port: ":8080"
 
+mq:
+  url: amqp://guest:guest@localhost:5672/
+
 mail_ingestion_service_url: http://localhost:8081
 task_service_url: http://localhost:8082
+agent_service_url: http://localhost:8000
+notification_service_url: http://localhost:8083

@@ -11,7 +11,7 @@ RUN apk add --no-cache git
 COPY go.mod ./
 COPY api-gateway/go.mod ./api-gateway/
 COPY mail-ingestion-service/go.mod ./mail-ingestion-service/
-COPY worker-service/go.mod ./worker-service/
+COPY email-processor-service/go.mod ./email-processor-service/
 
 # 下载依赖（如果 go.sum 不存在会自动生成）
 RUN go mod download

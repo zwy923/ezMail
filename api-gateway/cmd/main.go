@@ -10,6 +10,7 @@ import (
 	"api-gateway/internal/service/auth"
 	"mygoproject/pkg/db"
 	"mygoproject/pkg/logger"
+	"mygoproject/pkg/mq"
 
 	"go.uber.org/zap"
 )
@@ -32,6 +33,13 @@ func main() {
 	userRepo := repository.NewUserRepository(dbConn)
 	emailRepo := repository.NewEmailRepository(dbConn)
 
+	// Init MQ Publisher
+	taskPublisher, err := mq.NewPublisher(cfg.MQ.URL)
+	if err != nil {
+		logger.Fatal("Failed to init MQ publisher", zap.Error(err))
+	}
+	defer taskPublisher.Close()
+
 	// Init Services
 	authService := auth.NewService(userRepo, cfg.JWT.Secret)
 
@@ -39,9 +47,17 @@ func main() {
 	authHandler := handler.NewAuthHandler(authService)
 	mailProxyHandler := handler.NewMailProxyHandler(cfg.MailIngestionServiceURL)
 	emailQueryHandler := handler.NewEmailQueryHandler(emailRepo)
-	taskProxyHandler := handler.NewTaskProxyHandler(cfg.TaskServiceURL)
+	taskController := handler.NewTaskController(cfg.AgentServiceURL, cfg.TaskServiceURL, taskPublisher, logger)
+
 	// Router
-	router := httpserver.NewRouter(authHandler, mailProxyHandler, emailQueryHandler, taskProxyHandler, cfg.JWT.Secret, dbConn)
+	router := httpserver.NewRouter(
+		authHandler,
+		mailProxyHandler,
+		emailQueryHandler,
+		taskController,
+		cfg.JWT.Secret,
+		dbConn,
+	)
 
 	// Start API server
 	logger.Info("Starting API Gateway", zap.String("port", cfg.Server.Port))

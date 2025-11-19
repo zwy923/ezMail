@@ -59,7 +59,7 @@ func (p *Publisher) PublishToDLQ(routingKey string, payload []byte, originalErro
 	// Add error information to message headers
 	headers := amqp091.Table{
 		"x-original-error": originalError,
-		"x-failed-at":      "worker-service",
+		"x-failed-at":      "email-processor-service",
 	}
 
 	return p.channel.Publish(

@@ -4,16 +4,20 @@ import (
 	"log"
 	"os"
 
-	"gopkg.in/yaml.v3"
 	"mygoproject/pkg/config"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	DB                      config.DBConfig  `yaml:"db"`
-	JWT                     config.JWTConfig `yaml:"jwt"`
+	DB                      config.DBConfig     `yaml:"db"`
+	JWT                     config.JWTConfig    `yaml:"jwt"`
 	Server                  config.ServerConfig `yaml:"server"`
-	MailIngestionServiceURL string           `yaml:"mail_ingestion_service_url"`
-	TaskServiceURL          string           `yaml:"task_service_url"`
+	MQ                      config.MQConfig     `yaml:"mq"`
+	MailIngestionServiceURL string              `yaml:"mail_ingestion_service_url"`
+	TaskServiceURL          string              `yaml:"task_service_url"`
+	AgentServiceURL         string              `yaml:"agent_service_url"`
+	NotificationServiceURL  string              `yaml:"notification_service_url"`
 }
 
 func Load() *Config {
@@ -33,12 +37,18 @@ func Load() *Config {
 	config.OverrideDBFromEnv(&cfg.DB)
 	config.OverrideJWTFromEnv(&cfg.JWT)
 	config.OverrideServerFromEnv(&cfg.Server)
+	config.OverrideMQFromEnv(&cfg.MQ)
 	if url := os.Getenv("MAIL_INGESTION_SERVICE_URL"); url != "" {
 		cfg.MailIngestionServiceURL = url
 	}
 	if url := os.Getenv("TASK_SERVICE_URL"); url != "" {
-        cfg.TaskServiceURL = url
-    }
-
+		cfg.TaskServiceURL = url
+	}
+	if url := os.Getenv("AGENT_SERVICE_URL"); url != "" {
+		cfg.AgentServiceURL = url
+	}
+	if url := os.Getenv("NOTIFICATION_SERVICE_URL"); url != "" {
+		cfg.NotificationServiceURL = url
+	}
 	return &cfg
 }

@@ -17,7 +17,7 @@ func NewRouter(
 	authHandler *handler.AuthHandler,
 	mailProxyHandler *handler.MailProxyHandler,
 	emailQueryHandler *handler.EmailQueryHandler,
-	taskProxyHandler *handler.TaskProxyHandler,
+	taskController *handler.TaskController,
 	jwtSecret string,
 	db *pgxpool.Pool,
 ) *Router {
@@ -59,8 +59,12 @@ func NewRouter(
 	{
 		auth.POST("/email/simulate", mailProxyHandler.SimulateNewEmail)
 		auth.GET("/emails", emailQueryHandler.GetEmails)
-		auth.GET("/tasks", taskProxyHandler.GetTasks)
-		auth.POST("/tasks/:id/complete", taskProxyHandler.CompleteTask)
+		// Task endpoints (统一由 TaskController 处理)
+		auth.GET("/tasks", taskController.GetTasks)
+		auth.POST("/tasks/:id/complete", taskController.CompleteTask)
+		auth.POST("/tasks/from-text", taskController.CreateTasksFromText)
+		auth.POST("/tasks/plan-project", taskController.PlanProject)
+		
 	}
 
 	return &Router{Engine: r}
