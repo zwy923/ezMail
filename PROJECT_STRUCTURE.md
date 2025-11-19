@@ -216,10 +216,18 @@ MyGoProject/
 | created_at | TIMESTAMP | 创建时间 |
 
 **任务来源说明：**
-- **来自邮件：** `email_id` 不为 NULL，`habit_id` 和 `project_id` 为 NULL
-- **来自习惯：** `habit_id` 不为 NULL，`email_id` 和 `project_id` 为 NULL
-- **来自项目：** `project_id` 和 `milestone_id` 不为 NULL，`email_id` 和 `habit_id` 为 NULL
-- **来自文本：** `email_id`、`habit_id`、`project_id` 都为 NULL（一次性任务）
+- **来自邮件：** `email_id > 0`（插入实际值），`habit_id` 和 `project_id` 为 NULL
+  - 通过 `task.created` 事件创建，`TaskCreatedHandler` 验证 `email_id > 0`
+  - `Insert` 方法：当 `email_id > 0` 时插入实际值，否则插入 NULL
+- **来自文本：** `email_id = 0`（插入 NULL），`habit_id` 和 `project_id` 为 NULL（一次性任务）
+  - 通过 `task.bulk_created` 事件创建，`TaskBulkCreatedHandler` 设置 `EmailID: 0`
+  - `BulkInsert` 方法：当 `email_id <= 0` 时插入 NULL，避免外键冲突
+- **来自习惯：** `habit_id` 不为 NULL，`email_id` 为 NULL（不设置），`project_id` 为 NULL
+  - 通过 `habit.task.generated` 事件创建，`InsertFromHabit` 方法不包含 `email_id` 字段
+- **来自项目：** `project_id` 和 `milestone_id` 不为 NULL，`email_id` 为 NULL（不设置），`habit_id` 为 NULL
+  - 通过 `project.created` 事件创建，`InsertFromProject` 方法不包含 `email_id` 字段
+
+**重要：** 所有插入方法都正确处理 `email_id` 为 NULL 的情况，避免外键冲突。`ListByUser` 方法使用 `sql.NullInt32` 正确读取 NULL 值。
 
 **索引：**
 - `idx_tasks_user` (user_id)
@@ -431,6 +439,7 @@ MyGoProject/
 **消费者：** `task-service` → `TaskCreatedHandler`
 
 **处理流程：**
+- 验证 `email_id > 0`（task.created 事件必须来自邮件）
 - 插入任务到 `tasks` 表
 - 关联 `email_id` 和 `user_id`
 - 计算 `due_date = now + due_in_days`
@@ -460,7 +469,8 @@ MyGoProject/
 
 **处理流程：**
 - 使用事务批量插入任务
-- `email_id` 为 NULL（文本转任务没有关联邮件）
+- `email_id` 为 0 时插入 NULL（文本转任务没有关联邮件，避免外键冲突）
+- `Insert` 和 `BulkInsert` 方法自动处理：当 `email_id <= 0` 时插入 NULL
 
 ---
 
@@ -530,6 +540,7 @@ MyGoProject/
 1. 创建项目到 `projects` 表
 2. 为每个 milestone 创建阶段到 `milestones` 表
 3. 为每个任务创建任务到 `tasks` 表（关联 `project_id` 和 `milestone_id`）
+   - `email_id` 为 NULL（项目任务不关联邮件，`InsertFromProject` 方法不包含 `email_id` 字段）
 4. 解析任务依赖关系，创建 `task_dependencies` 记录
 
 ---
@@ -598,6 +609,7 @@ MyGoProject/
 
 **处理流程：**
 - 插入任务到 `tasks` 表（关联 `habit_id`）
+- `email_id` 为 NULL（习惯任务不关联邮件）
 - 使用唯一索引保证幂等性（同一习惯同一天只生成一次）
 
 ---
@@ -942,6 +954,20 @@ users
 3. **MQ 消息处理：**
    - Redis 去重机制（Deduper）
    - 重试计数（RetryCounter）
+
+### 数据完整性保证
+1. **email_id 外键约束处理：**
+   - 当 `email_id > 0` 时，必须存在对应的 `emails_raw.id`（外键约束）
+   - 当 `email_id = 0` 或未设置时，插入 NULL，避免外键冲突
+   - `Insert` 方法：当 `email_id <= 0` 时自动插入 NULL
+   - `BulkInsert` 方法：当 `email_id <= 0` 时自动插入 NULL
+   - `InsertFromHabit` 方法：不包含 `email_id` 字段，自动插入 NULL
+   - `InsertFromProject` 方法：不包含 `email_id` 字段，自动插入 NULL
+   - `ListByUser` 方法：使用 `sql.NullInt32` 正确读取 NULL 值
+
+2. **任务来源验证：**
+   - `task.created` 事件必须包含有效的 `email_id > 0`（`TaskCreatedHandler` 验证）
+   - 文本转任务、习惯任务、项目任务的 `email_id` 为 NULL，符合业务逻辑
 
 ### 认证授权
 - JWT Token 认证
