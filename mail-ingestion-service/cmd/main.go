@@ -47,7 +47,7 @@ func main() {
 	ingestHandler := handler.NewIngestHandler(ingestService)
 
 	// Router
-	router := httpserver.NewRouter(ingestHandler)
+	router := httpserver.NewRouter(ingestHandler, dbConn, publisher)
 
 	// Start server
 	logger.Info("Starting mail ingestion service", zap.String("port", cfg.Server.Port))

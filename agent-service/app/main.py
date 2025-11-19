@@ -30,12 +30,15 @@ async def decide(payload: EmailInput) -> AgentDecision:
         logger.debug("开始调用决策链...")
 
         # ⭐ 关键：decision_chain.ainvoke() 已返回 AgentDecision 对象，不是 dict
-        decision: AgentDecision = await decision_chain.ainvoke(payload.dict())
+        # Pydantic v2 使用 model_dump()，v1 使用 dict()
+        payload_dict = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
+        decision: AgentDecision = await decision_chain.ainvoke(payload_dict)
 
-        # ⭐ 使用 dict() 才能 JSON dump
+        # ⭐ 使用 model_dump() 或 dict() 才能 JSON dump
+        decision_dict = decision.model_dump() if hasattr(decision, 'model_dump') else decision.dict()
         logger.debug(
             "决策链返回结果: %s",
-            json.dumps(decision.dict(), ensure_ascii=False, indent=2)
+            json.dumps(decision_dict, ensure_ascii=False, indent=2)
         )
 
         logger.info(

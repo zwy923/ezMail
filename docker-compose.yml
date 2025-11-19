@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL 数据库
   postgres:
@@ -75,6 +73,7 @@ services:
       JWT_SECRET: zwy923
       SERVER_PORT: :8080
       MAIL_INGESTION_SERVICE_URL: http://mail-ingestion-service:8081
+      TASK_SERVICE_URL: http://task-service:8082
     volumes:
       - ./api-gateway/config.yaml:/app/config.yaml:ro
     depends_on:
@@ -82,6 +81,12 @@ services:
         condition: service_healthy
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # Mail Ingestion Service
@@ -109,6 +114,12 @@ services:
         condition: service_healthy
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # Worker Service
@@ -143,6 +154,38 @@ services:
       - app-network
     restart: unless-stopped
 
+  # Task Service
+  task-service:
+    build:
+      context: .
+      dockerfile: task-service/Dockerfile
+    container_name: mygoproject-task-service
+    ports:
+      - "8082:8082"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: 0923
+      DB_NAME: mygoproject
+      MQ_URL: amqp://guest:guest@rabbitmq:5672/
+    volumes:
+      - ./task-service/config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
   # Agent Service (Python)
   agent-service:
     build:
@@ -155,6 +198,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

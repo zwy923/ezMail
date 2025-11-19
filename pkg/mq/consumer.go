@@ -26,6 +26,9 @@ type Consumer struct {
 	logger       *zap.Logger
 	dlqPublisher *Publisher // 用于发送到死信队列
 	maxRetries   int        // 最大重试次数
+	ctx          context.Context
+	cancel       context.CancelFunc
+	stopChan     chan struct{}
 }
 
 // NewConsumer creates a consumer for a specific routing key.
@@ -105,6 +108,8 @@ func NewConsumerWithRetry(url, queueName, routingKey string, logger *zap.Logger,
 		zap.Int("max_retries", maxRetries),
 	)
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &Consumer{
 		conn:         conn,
 		channel:     ch,
@@ -113,6 +118,9 @@ func NewConsumerWithRetry(url, queueName, routingKey string, logger *zap.Logger,
 		logger:      logger,
 		dlqPublisher: dlqPublisher,
 		maxRetries:  maxRetries,
+		ctx:         ctx,
+		cancel:      cancel,
+		stopChan:    make(chan struct{}),
 	}, nil
 }
 
@@ -127,6 +135,18 @@ func (c *Consumer) Close() {
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
+}
+
+// IsConnected checks if the consumer connection is still alive
+func (c *Consumer) IsConnected() bool {
+	if c.conn == nil || c.channel == nil {
+		return false
+	}
+	// Check if connection is closed
+	if c.conn.IsClosed() {
+		return false
+	}
+	return true
 }
 
 // StartConsuming starts consuming messages. This method blocks and should be called in a goroutine.
@@ -154,15 +174,30 @@ func (c *Consumer) StartConsuming() error {
 	)
 
 	// 最安全的消费模型：保证每条消息都会被 ack 或 nack
-	for msg := range deliveries {
-		func() {
-			ctx := context.Background()
-
-			c.logger.Debug("Received message",
+	for {
+		select {
+		case <-c.ctx.Done():
+			c.logger.Info("Consumer stopping, waiting for current messages to complete...",
 				zap.String("routing_key", c.routingKey),
-				zap.String("queue", c.queue.Name),
-				zap.Int("message_size", len(msg.Body)),
 			)
+			close(c.stopChan)
+			return nil
+		case msg, ok := <-deliveries:
+			if !ok {
+				c.logger.Info("Consumer channel closed",
+					zap.String("routing_key", c.routingKey),
+				)
+				close(c.stopChan)
+				return nil
+			}
+			func() {
+				ctx := context.Background()
+
+				c.logger.Debug("Received message",
+					zap.String("routing_key", c.routingKey),
+					zap.String("queue", c.queue.Name),
+					zap.Int("message_size", len(msg.Body)),
+				)
 
 			// Panic 恢复：确保即使 handler panic 也能正确处理消息
 			defer func() {
@@ -275,8 +310,19 @@ func (c *Consumer) StartConsuming() error {
 				)
 			}
 		}()
+		}
 	}
+}
 
-	return nil
+// Stop gracefully stops the consumer
+func (c *Consumer) Stop() {
+	c.logger.Info("Stopping consumer...",
+		zap.String("routing_key", c.routingKey),
+	)
+	c.cancel()
+	<-c.stopChan
+	c.logger.Info("Consumer stopped",
+		zap.String("routing_key", c.routingKey),
+	)
 }
 

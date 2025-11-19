@@ -45,6 +45,18 @@ func (p *Publisher) Close() {
 	}
 }
 
+// IsConnected checks if the publisher connection is still alive
+func (p *Publisher) IsConnected() bool {
+	if p.conn == nil || p.channel == nil {
+		return false
+	}
+	// Check if connection is closed
+	if p.conn.IsClosed() {
+		return false
+	}
+	return true
+}
+
 // Publish publishes an event to the exchange with the given routing key.
 func (p *Publisher) Publish(routingKey string, payload any) error {
 	body, err := json.Marshal(payload)

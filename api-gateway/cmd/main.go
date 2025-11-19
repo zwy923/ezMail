@@ -39,9 +39,9 @@ func main() {
 	authHandler := handler.NewAuthHandler(authService)
 	mailProxyHandler := handler.NewMailProxyHandler(cfg.MailIngestionServiceURL)
 	emailQueryHandler := handler.NewEmailQueryHandler(emailRepo)
-
+	taskProxyHandler := handler.NewTaskProxyHandler(cfg.TaskServiceURL)
 	// Router
-	router := httpserver.NewRouter(authHandler, mailProxyHandler, emailQueryHandler, cfg.JWT.Secret)
+	router := httpserver.NewRouter(authHandler, mailProxyHandler, emailQueryHandler, taskProxyHandler, cfg.JWT.Secret, dbConn)
 
 	// Start API server
 	logger.Info("Starting API Gateway", zap.String("port", cfg.Server.Port))
@@ -49,4 +49,3 @@ func main() {
 		log.Fatalf("server start failed: %v", err)
 	}
 }
-

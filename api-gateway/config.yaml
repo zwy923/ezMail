@@ -12,4 +12,4 @@ server:
   port: ":8080"
 
 mail_ingestion_service_url: http://localhost:8081
-
+task_service_url: http://localhost:8082

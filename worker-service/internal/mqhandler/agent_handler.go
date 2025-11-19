@@ -10,6 +10,8 @@ import (
 	"worker-service/internal/repository"
 	"worker-service/internal/service"
 
+	"mygoproject/pkg/mq"
+
 	"go.uber.org/zap"
 )
 
@@ -27,29 +29,30 @@ type AgentDecisionHandler struct {
 	retryCounter *util.RetryCounter
 	deduper      *util.Deduper
 	logger       *zap.Logger
+
+	taskPublisher *mq.Publisher  // 新增：负责任务事件的发布
 }
 
 func NewAgentDecisionHandler(
-	emailRepo *repository.EmailRepository,
-	metadataRepo *repository.MetadataRepository,
-	taskRepo *repository.TaskRepository,
-	notificationRepo *repository.NotificationRepository,
-	agentClient *service.AgentClient,
-	retryCounter *util.RetryCounter,
-	deduper *util.Deduper,
-	logger *zap.Logger,
+    emailRepo *repository.EmailRepository,
+    metadataRepo *repository.MetadataRepository,
+    notificationRepo *repository.NotificationRepository,
+    agentClient *service.AgentClient,
+    retryCounter *util.RetryCounter,
+    deduper *util.Deduper,
+    taskPublisher *mq.Publisher,   // 新增
+    logger *zap.Logger,
 ) *AgentDecisionHandler {
-	return &AgentDecisionHandler{
-		emailRepo:        emailRepo,
-		metadataRepo:     metadataRepo,
-		taskRepo:         taskRepo,
-		notificationRepo: notificationRepo,
-
-		agentClient:  agentClient,
-		retryCounter: retryCounter,
-		deduper:      deduper,
-		logger:       logger,
-	}
+    return &AgentDecisionHandler{
+        emailRepo:        emailRepo,
+        metadataRepo:     metadataRepo,
+        notificationRepo: notificationRepo,
+        agentClient:      agentClient,
+        retryCounter:     retryCounter,
+        deduper:          deduper,
+        taskPublisher:    taskPublisher,
+        logger:           logger,
+    }
 }
 
 func (h *AgentDecisionHandler) Handle(ctx context.Context, raw json.RawMessage) error {
@@ -128,8 +131,25 @@ func (h *AgentDecisionHandler) Handle(ctx context.Context, raw json.RawMessage) 
 	// Step 6: create task (optional)
 	// --------------------------
 	if decision.ShouldCreateTask && decision.Task != nil {
-		if err := h.taskRepo.Insert(ctx, payload.EmailID, payload.UserID, decision.Task); err != nil {
-			return h.handleRepoError("InsertTask", err)
+		taskPayload := mqcontracts.TaskCreatedPayload{
+			EmailID:   payload.EmailID,
+			UserID:    payload.UserID,
+			Title:     decision.Task.Title,
+			DueInDays: decision.Task.DueInDays,
+		}
+	
+		h.logger.Info("Publishing task.created event",
+			zap.Int("email_id", taskPayload.EmailID),
+			zap.Int("user_id", taskPayload.UserID),
+			zap.String("title", taskPayload.Title),
+			zap.Int("due_in_days", taskPayload.DueInDays),
+		)
+	
+		if err := h.taskPublisher.Publish("task.created", taskPayload); err != nil {
+			// 这里按你的风格走统一错误处理
+			h.logger.Error("Failed to publish task.created event", zap.Error(err))
+			// 一般来说：MQ 发布失败是可重试错误
+			return err
 		}
 	}
 

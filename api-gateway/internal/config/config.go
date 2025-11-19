@@ -13,6 +13,7 @@ type Config struct {
 	JWT                     config.JWTConfig `yaml:"jwt"`
 	Server                  config.ServerConfig `yaml:"server"`
 	MailIngestionServiceURL string           `yaml:"mail_ingestion_service_url"`
+	TaskServiceURL          string           `yaml:"task_service_url"`
 }
 
 func Load() *Config {
@@ -35,6 +36,9 @@ func Load() *Config {
 	if url := os.Getenv("MAIL_INGESTION_SERVICE_URL"); url != "" {
 		cfg.MailIngestionServiceURL = url
 	}
+	if url := os.Getenv("TASK_SERVICE_URL"); url != "" {
+        cfg.TaskServiceURL = url
+    }
 
 	return &cfg
 }

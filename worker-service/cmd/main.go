@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"mygoproject/pkg/db"
@@ -42,17 +45,29 @@ func main() {
 	// repositories
 	emailRepo := repository.NewEmailRepository(dbConn)
 	metadataRepo := repository.NewMetadataRepository(dbConn)
-	taskRepo := repository.NewTaskRepository(dbConn)
 	notiRepo := repository.NewNotificationRepository(dbConn)
 	notiLogRepo := repository.NewNotificationLogRepository(dbConn)
 
 	// agent client
 	agentClient := service.NewAgentClient(cfg.AgentServiceURL)
 
+	// task publisher
+	taskPublisher, err := mq.NewPublisher(cfg.MQ.URL)
+	if err != nil {
+		logger.Fatal("failed to init task publisher", zap.Error(err))
+	}
+	defer taskPublisher.Close()
+
 	// handlers
 	agentHandler := mqhandler.NewAgentDecisionHandler(
-		emailRepo, metadataRepo, taskRepo, notiRepo,
-		agentClient, retryCounter, deduper, logger,
+		emailRepo,
+		metadataRepo,
+		notiRepo, // notificationRepo
+		agentClient,
+		retryCounter,
+		deduper,
+		taskPublisher, // 新增
+		logger,
 	)
 
 	notiLogHandler := mqhandler.NewEmailReceivedNotificationLogHandler(notiLogRepo, logger)
@@ -123,5 +138,31 @@ func main() {
 	defer consumerNoti.Close()
 
 	logger.Info("Worker running")
-	select {}
+
+	// 优雅退出处理
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Info("Shutting down worker-service gracefully...")
+
+	// 停止所有消费者
+	logger.Info("Stopping MQ consumers...")
+	consumerAgent.Stop()
+	consumerNotiLog.Stop()
+	consumerNoti.Stop()
+
+	// 关闭数据库连接
+	logger.Info("Closing database connection...")
+	dbConn.Close()
+
+	// 关闭 Redis 连接
+	logger.Info("Closing Redis connection...")
+	rdb.Close()
+
+	// 关闭任务发布者
+	logger.Info("Closing task publisher...")
+	taskPublisher.Close()
+
+	logger.Info("worker-service shutdown complete")
 }

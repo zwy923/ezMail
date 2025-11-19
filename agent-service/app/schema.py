@@ -1,10 +1,19 @@
-# app/agent/schema.py
+# app/schema.py
 from pydantic import BaseModel
 from typing import List, Optional
+
+
+class EmailInput(BaseModel):
+    email_id: int
+    user_id: int
+    subject: str
+    body: str
+
 
 class TaskDecision(BaseModel):
     title: str
     due_in_days: int
+
 
 class AgentDecision(BaseModel):
     categories: List[str]
